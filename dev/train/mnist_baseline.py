@@ -5,8 +5,8 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
-from mlfpga.config import DATA_ROOT, MODELS_ROOT
 
+from mlfpga.config import DATA_ROOT, MODELS_ROOT
 from mlfpga.models import DigitClassificationNN as ModelNN
 
 # 1. Dataset

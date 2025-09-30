@@ -68,5 +68,6 @@ print(f"Accuray in test (quantized): {100 * correct / total:.2f}%")
 # ============================
 # 🔹 5. Save models
 # ============================
-torch.save(model_q.state_dict(), os.path.join(MODELS_ROOT, "mnist_baseline_q.pth"))
-print("Model saved at mnist_baseline.pth")
+file_path = os.path.join(MODELS_ROOT, "mnist_baseline_q.pth")
+torch.save(model_q.state_dict(), file_path)
+print(f"Model saved at {file_path}")
