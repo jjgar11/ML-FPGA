@@ -5,6 +5,8 @@ import torchvision
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 
+from models import SimpleNN
+
 # 🔹 1. Dataset
 transform = transforms.Compose([transforms.ToTensor()])
 trainset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform)
@@ -12,20 +14,6 @@ trainloader = torch.utils.data.DataLoader(trainset, batch_size=64, shuffle=True)
 
 testset = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform)
 testloader = torch.utils.data.DataLoader(testset, batch_size=1000, shuffle=False)
-
-# 🔹 2. Red neuronal simple (MLP)
-class SimpleNN(nn.Module):
-    def __init__(self):
-        super(SimpleNN, self).__init__()
-        self.fc1 = nn.Linear(28*28, 128)
-        self.fc2 = nn.Linear(128, 64)
-        self.fc3 = nn.Linear(64, 10)
-
-    def forward(self, x):
-        x = x.view(-1, 28*28)
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        return self.fc3(x)
 
 model = SimpleNN()
 
