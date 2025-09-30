@@ -1,0 +1,8 @@
+setup.py
+mlfpga.egg-info/PKG-INFO
+mlfpga.egg-info/SOURCES.txt
+mlfpga.egg-info/dependency_links.txt
+mlfpga.egg-info/top_level.txt
+quantize/__init__.py
+quantize/export_onnx.py
+quantize/ptq_mnist.py

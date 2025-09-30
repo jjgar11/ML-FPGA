@@ -1,28 +1,30 @@
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
+from mlfpga.config import DATA_ROOT, MODELS_ROOT
 
-from models import SimpleNN
+from mlfpga.models import DigitClassificationNN as ModelNN
 
-# 🔹 1. Dataset
+# 1. Dataset
 transform = transforms.Compose([transforms.ToTensor()])
-trainset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+trainset = torchvision.datasets.MNIST(root=DATA_ROOT, train=True, download=True, transform=transform)
 trainloader = torch.utils.data.DataLoader(trainset, batch_size=64, shuffle=True)
 
-testset = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform)
+testset = torchvision.datasets.MNIST(root=DATA_ROOT, train=False, download=True, transform=transform)
 testloader = torch.utils.data.DataLoader(testset, batch_size=1000, shuffle=False)
 
-model = SimpleNN()
+model = ModelNN()
 
-# 🔹 3. Entrenamiento
+# 3. Training
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-print("Entrenando...")
-for epoch in range(3):  # pocas épocas para demo
+print("Training...")
+for epoch in range(3):  # few epochs demo
     for images, labels in trainloader:
         optimizer.zero_grad()
         outputs = model(images)
@@ -31,7 +33,7 @@ for epoch in range(3):  # pocas épocas para demo
         optimizer.step()
     print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}")
 
-# 🔹 4. Evaluación
+# 4. Validation
 correct, total = 0, 0
 with torch.no_grad():
     for images, labels in testloader:
@@ -40,8 +42,8 @@ with torch.no_grad():
         total += labels.size(0)
         correct += (predicted == labels).sum().item()
 
-print(f"Accuracy en test: {100 * correct / total:.2f}%")
+print(f"Accuracy in test: {100 * correct / total:.2f}%")
 
-# 🔹 5. Guardar modelo
-torch.save(model.state_dict(), "mnist_baseline.pth")
-print("Modelo guardado en mnist_baseline.pth")
+# 5. Save model
+torch.save(model.state_dict(), os.path.join(MODELS_ROOT, "mnist_baseline.pth"))
+print("Model saved at mnist_baseline.pth")
