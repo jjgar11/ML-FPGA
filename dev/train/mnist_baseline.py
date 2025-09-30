@@ -45,5 +45,6 @@ with torch.no_grad():
 print(f"Accuracy in test: {100 * correct / total:.2f}%")
 
 # 5. Save model
-torch.save(model.state_dict(), os.path.join(MODELS_ROOT, "mnist_baseline.pth"))
-print("Model saved at mnist_baseline.pth")
+file_path = os.path.join(MODELS_ROOT, "mnist_baseline.pth")
+torch.save(model.state_dict(), file_path)
+print(f"Model saved at {file_path}")

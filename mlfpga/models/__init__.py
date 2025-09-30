@@ -1,1 +1,2 @@
-from .models import DigitClassificationNN, QuantizableDigitClassificationNN
+from .digit_classification import DigitClassificationNN, QuantizableDigitClassificationNN
+from .wine_classification import WineNet as WineClassificationNN
