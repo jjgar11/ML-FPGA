@@ -5,7 +5,7 @@ import torch.quantization as quant
 
 class DigitClassificationNN(nn.Module):
     def __init__(self):
-        super(DigitClassificationNN, self).__init__()
+        super().__init__()
         self.fc1 = nn.Linear(28*28, 128)
         self.fc2 = nn.Linear(128, 64)
         self.fc3 = nn.Linear(64, 10)
@@ -18,7 +18,7 @@ class DigitClassificationNN(nn.Module):
 
 class QuantizableDigitClassificationNN(nn.Module):
     def __init__(self):
-        super(QuantizableDigitClassificationNN, self).__init__()
+        super().__init__()
         self.quant = quant.QuantStub()
         self.fc1 = nn.Linear(28*28, 128)
         self.fc2 = nn.Linear(128, 64)

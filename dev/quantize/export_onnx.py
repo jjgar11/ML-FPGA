@@ -30,7 +30,7 @@ with torch.no_grad():
         correct += (predicted == labels).sum().item()
 
 accuracy = 100 * correct / total
-print(f"Test accuracy (quantized model)): {accuracy:.2f}%")
+print(f"Test accuracy (quantized model): {accuracy:.2f}%")
 
 # 4. Export to ONNX
 dummy_input = torch.randn(1, 1, 28, 28)

@@ -16,7 +16,7 @@ model.eval()
 # ============================
 # 3. Configure quantization backend
 # ============================
-print("Motores disponibles:", torch.backends.quantized.supported_engines)
+print("Supported engines:", torch.backends.quantized.supported_engines)
 torch.backends.quantized.engine = "fbgemm"  # Cambia a "qnnpack" si estás en ARM/Raspberry
 
 # ============================
@@ -33,19 +33,17 @@ model.qconfig = quant.get_default_qconfig(torch.backends.quantized.engine)
 
 model_prep = quant.prepare(model, inplace=False)
 
-print("Calibrando modelo...")
+print("Calibrating model...")
 with torch.no_grad():
     for i, (images, _) in enumerate(calib_loader):
         model_prep(images)
         if i > 10:
             break
 
-print(torch.backends.quantized.supported_engines)
-
-
-# d) Convert to quantized model
+# 5.1 Convert to quantized model
 model_q = quant.convert(model_prep, inplace=False)
 print("Quantized model ready")
+print(model)
 print(model_q)
 
 # ============================
@@ -55,14 +53,19 @@ test_dataset = datasets.MNIST(root=DATA_ROOT, train=False, download=True, transf
 test_loader = DataLoader(test_dataset, batch_size=1000, shuffle=False)
 
 correct, total = 0, 0
+correct_q, total_q = 0, 0
 with torch.no_grad():
     for images, labels in test_loader:
-        outputs = model_q(images)
+        outputs = model(images)
+        outputs_q = model_q(images)
         _, predicted = torch.max(outputs, 1)
+        _, predicted_q = torch.max(outputs_q, 1)
         total += labels.size(0)
         correct += (predicted == labels).sum().item()
+        correct_q += (predicted_q == labels).sum().item()
 
 print(f"Accuray in test (quantized): {100 * correct / total:.2f}%")
+print(f"Accuray in test (standard): {100 * correct_q / total:.2f}%")
 
 
 # ============================
