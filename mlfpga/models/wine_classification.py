@@ -2,8 +2,9 @@
 import torch
 import torch.nn as nn
 import torch.quantization as quant
+from .model import BaseNet
 
-class WineNet(nn.Module):
+class WineNet(BaseNet):
     def __init__(self):
         super().__init__()
         self.fc1 = nn.Linear(13, 32)
@@ -17,7 +18,7 @@ class WineNet(nn.Module):
         x = self.fc3(x)
         return self.softmax(x)
 
-class QuantizableWineNet(nn.Module):
+class QuantizableWineNet(BaseNet):
     def __init__(self):
         super().__init__()
         self.quant = quant.QuantStub()

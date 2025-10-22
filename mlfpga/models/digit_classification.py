@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.quantization as quant
+from .model import BaseNet
 
-
-class DigitClassificationNN(nn.Module):
+class DigitClassificationNN(BaseNet):
     def __init__(self):
         super().__init__()
         self.fc1 = nn.Linear(28*28, 128)
@@ -16,7 +16,7 @@ class DigitClassificationNN(nn.Module):
         x = torch.relu(self.fc2(x))
         return self.fc3(x)
 
-class QuantizableDigitClassificationNN(nn.Module):
+class QuantizableDigitClassificationNN(BaseNet):
     def __init__(self):
         super().__init__()
         self.quant = quant.QuantStub()
