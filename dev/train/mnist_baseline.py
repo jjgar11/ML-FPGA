@@ -23,26 +23,10 @@ model = ModelNN()
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-print("Training...")
-for epoch in range(3):  # few epochs demo
-    for images, labels in trainloader:
-        optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-    print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}")
+model.train_model(3, criterion, optimizer, trainloader)
 
 # 4. Validation
-correct, total = 0, 0
-with torch.no_grad():
-    for images, labels in testloader:
-        outputs = model(images)
-        _, predicted = torch.max(outputs.data, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
-
-print(f"Accuracy in test: {100 * correct / total:.2f}%")
+model.test_model(testloader)
 
 # 5. Save model
 file_path = os.path.join(MODELS_ROOT, "mnist_baseline.pth")

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.ao.quantization as quant
 from torchvision import datasets, transforms
-from mlfpga.models import QuantizableDigitClassificationNN as QuantizableNN
+from mlfpga.models import DigitClassificationNN as QuantizableNN
 from torch.utils.data import DataLoader
 from mlfpga.config import *
 
@@ -52,20 +52,7 @@ print(model_q)
 test_dataset = datasets.MNIST(root=DATA_ROOT, train=False, download=True, transform=transform)
 test_loader = DataLoader(test_dataset, batch_size=1000, shuffle=False)
 
-correct, total = 0, 0
-correct_q, total_q = 0, 0
-with torch.no_grad():
-    for images, labels in test_loader:
-        outputs = model(images)
-        outputs_q = model_q(images)
-        _, predicted = torch.max(outputs, 1)
-        _, predicted_q = torch.max(outputs_q, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
-        correct_q += (predicted_q == labels).sum().item()
-
-print(f"Accuray in test (quantized): {100 * correct / total:.2f}%")
-print(f"Accuray in test (standard): {100 * correct_q / total:.2f}%")
+model_q.test_model()
 
 
 # ============================

@@ -8,7 +8,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import torch.ao.quantization as quant
 
-from mlfpga.models.wine_classification import QuantizableWineNet as model
+from mlfpga.models import WineClassificationNN as QuantizableNN
 from mlfpga.config import *
 
 # Data
@@ -24,7 +24,7 @@ train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=16, shuffl
 test_loader = DataLoader(TensorDataset(X_test, y_test), batch_size=16)
 
 # Model
-model = model()
+model = QuantizableNN()
 model.load_state_dict(torch.load(os.path.join(MODELS_ROOT, "wine.pth"), map_location="cpu", weights_only=True))
 model.eval()
 
@@ -50,15 +50,7 @@ print(model)
 print(model_q)
 
 # Evaluate
-model_q.eval()
-correct = 0
-total = 0
-with torch.no_grad():
-    for xb, yb in test_loader:
-        preds = model_q(xb)
-        correct += (preds.argmax(1) == yb).sum().item()
-        total += yb.size(0)
-print(f"Accuray in test (quantized): {100 * correct / total:.2f}%")
+model_q.test_model(test_loader)
 
 
 file_path = os.path.join(MODELS_ROOT, "wine_q.pth")

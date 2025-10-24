@@ -36,26 +36,11 @@ model = ModelNN()
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.01)
 
-for epoch in range(3):
-    model.train()
-    for xb, yb in train_loader:
-        optimizer.zero_grad()
-        preds = model(xb)
-        loss = criterion(preds, yb)
-        loss.backward()
-        optimizer.step()
-    print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}")
+model.train_model(20, criterion, optimizer, train_loader)
+
 
 # 7. Evaluación antes de cuantizar
-model.eval()
-correct = 0
-total = 0
-with torch.no_grad():
-    for xb, yb in test_loader:
-        preds = model(xb)
-        correct += (preds.argmax(1) == yb).sum().item()
-        total += yb.size(0)
-print("Accuracy before quantization:", correct/total*100)
+model.test_model(test_loader)
 
 # 8. Save model
 file_path = os.path.join(MODELS_ROOT, "wine.pth")
