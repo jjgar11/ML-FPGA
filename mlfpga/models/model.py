@@ -13,8 +13,8 @@ class BaseNet(nn.Module):
     def save_model(self, filename):
         for name, module in self.named_modules():
             if isinstance(module, torch.nn.quantized.Linear):
-                weight = module.weight()  # devuelve un tensor float32 (dequantizado)
-                bias = module.bias()      # devuelve un tensor float32 (si existe)
+                weight = module.weight()
+                bias = module.bias()
                 print(f"{name}: weight dtype = {weight.dtype}, shape = {weight.shape}")
                 if bias is not None:
                     print(f"{name}: bias dtype = {bias.dtype}, shape = {bias.shape}")

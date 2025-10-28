@@ -45,7 +45,7 @@ for name, param in model.named_parameters():
 
 q_model = model.quantize_post_training(
     calib_loader=testloader,
-    # backend="fbgemm", 
+    backend="qnnpack", 
     max_batches=10,
     filename="wine_q.pth",
 )

@@ -6,10 +6,10 @@ import torchvision.transforms as transforms
 from mlfpga.config import DATA_ROOT, MODELS_ROOT
 
 
-from mlfpga.models import DigitClassificationNN
+from mlfpga.models.digit_classification import DigitClassificationNN, QuantizableDigitClassificationNN
 
 
-model = DigitClassificationNN()
+model = QuantizableDigitClassificationNN()
 
 transform = transforms.Compose([transforms.ToTensor()])
 trainset = torchvision.datasets.MNIST(root=DATA_ROOT, train=True, download=True, transform=transform)
@@ -22,7 +22,7 @@ criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 model.train_model(
-    epochs=3,
+    epochs=2,
     criterion=criterion,
     optimizer=optimizer,
     trainloader=trainloader,
@@ -33,12 +33,13 @@ model.test_model(testloader)
 
 q_model = model.quantize_post_training(
     calib_loader=testloader,
-    # backend="fbgemm", 
+    backend="qnnpack", 
     max_batches=10,
     filename="mnist_q.pth",
 )
 
 q_model.export_onnx(
+    clean_model = DigitClassificationNN,
     dummy_input = torch.randn(1, 1, 28, 28),
     filename = "mnist_quantized.onnx"
 )
