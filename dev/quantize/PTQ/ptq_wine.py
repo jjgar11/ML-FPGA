@@ -9,7 +9,7 @@ from sklearn.preprocessing import StandardScaler
 import torch.ao.quantization as quant
 
 from mlfpga.models import WineClassificationNN as QuantizableNN
-from mlfpga.config import *
+from mlfpga.config import MODELS_ROOT
 
 # Data
 data = load_wine()

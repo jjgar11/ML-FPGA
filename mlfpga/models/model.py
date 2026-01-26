@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.quantization as quant
 import os
-from mlfpga.config import *
+from mlfpga.config import MODELS_ROOT
 
 class BaseNet(nn.Module):
     def __init__(self, *args, **kwargs):

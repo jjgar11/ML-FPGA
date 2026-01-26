@@ -3,8 +3,8 @@ import torch.nn as nn
 import torchvision
 import torchvision.transforms as transforms
 import os
-from mlfpga.models import QuantizableDigitClassificationNN as QuantizableNN
-from mlfpga.config import *
+from mlfpga.models import DigitClassificationNN as QuantizableNN
+from mlfpga.config import DATA_ROOT, MODELS_ROOT
 
 # 1. Test dataset
 transform = transforms.Compose([transforms.ToTensor()])

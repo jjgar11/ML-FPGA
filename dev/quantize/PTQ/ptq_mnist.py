@@ -1,10 +1,11 @@
+import os
 import torch
 import torch.nn as nn
 import torch.ao.quantization as quant
 from torchvision import datasets, transforms
 from mlfpga.models import DigitClassificationNN as QuantizableNN
 from torch.utils.data import DataLoader
-from mlfpga.config import *
+from mlfpga.config import DATA_ROOT, MODELS_ROOT
 
 # ============================
 # 2. Load trained model
