@@ -35,11 +35,10 @@ q_model = model.quantize_post_training(
     calib_loader=testloader,
     backend="qnnpack", 
     max_batches=10,
-    filename="mnist_q.pth",
+    filename="mnist_quantized.pth",
 )
 
 q_model.export_onnx(
-    clean_model = DigitClassificationNN,
     dummy_input = torch.randn(1, 1, 28, 28),
     filename = "mnist_quantized.onnx"
 )
