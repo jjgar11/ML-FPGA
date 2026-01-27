@@ -30,7 +30,7 @@ MODEL_REGISTRY = {
         pth_filename="wine.pth",
         onnx_float_filename="wine_float.onnx",
         dummy_input=lambda: torch.randn(1, 13),
-        input_shape_for_hls4ml=(1, 13),
+        input_shape_for_hls4ml=(13,),
     ),
 }
 
