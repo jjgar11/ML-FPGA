@@ -75,7 +75,19 @@ class BaseNet(nn.Module):
 
         return quantized_model
 
-    def export_onnx(self, dummy_input, filename):
+    def export_onnx(self, dummy_input, filename, opset_version=13,
+                    input_names=("input",), output_names=("logits",), dynamic_batch=True):
         save_path = os.path.join(self.model_path, filename)
-        torch.onnx.export(self, dummy_input, save_path, opset_version=13)
+        self.eval()
+        dyn = None
+        if dynamic_batch:
+            dyn = {input_names[0]: {0: "batch"}, output_names[0]: {0: "batch"}}
+
+        torch.onnx.export(
+            self, dummy_input, save_path,
+            opset_version=opset_version,
+            input_names=list(input_names),
+            output_names=list(output_names),
+            dynamic_axes=dyn,
+        )
         print(f"Model exported to ONNX: {save_path}")

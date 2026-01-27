@@ -24,7 +24,7 @@ Status: ✅ Completed
 
 ---
 
-## Phase 3 — hls4ml Pipeline (Planned)
+## Phase 3 — hls4ml Pipeline (In Progress)
 
 - Export floating-point models to ONNX.
 - Convert ONNX models using hls4ml.
@@ -32,7 +32,7 @@ Status: ✅ Completed
 - Perform C-simulation and synthesis.
 - Deploy on Ultra96-v2.
 
-Status: ⏳ Planned
+Status: 🔄 In Progress
 
 ---
 

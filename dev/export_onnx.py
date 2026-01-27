@@ -1,45 +1,39 @@
-import torch
-import torch.nn as nn
-import torchvision
-import torchvision.transforms as transforms
+import argparse
 import os
-from mlfpga.models import DigitClassificationNN as QuantizableNN
-from mlfpga.config import DATA_ROOT, MODELS_ROOT
+import torch
 
-# 1. Test dataset
-transform = transforms.Compose([transforms.ToTensor()])
-testset = torchvision.datasets.MNIST(root=DATA_ROOT, train=False, download=True, transform=transform)
-testloader = torch.utils.data.DataLoader(testset, batch_size=1000, shuffle=False)
+from mlfpga.models.registry import get_model_spec
+from mlfpga.config import MODELS_ROOT
 
-# 2. Load quantized model
-model_int8 = QuantizableNN()
-model_int8.qconfig = torch.ao.quantization.get_default_qconfig("fbgemm")
-model_int8_fp = torch.quantization.prepare(model_int8, inplace=False)
-model_int8 = torch.quantization.convert(model_int8_fp, inplace=False)
+def export_float_onnx(model_name: str, opset: int = 13):
+    spec = get_model_spec(model_name)
 
-model_int8.load_state_dict(torch.load(os.path.join(MODELS_ROOT, "mnist_baseline_q.pth")))
-model_int8.eval()
+    model = spec.float_cls()
+    pth_path = os.path.join(MODELS_ROOT, spec.pth_filename)
+    model.load_state_dict(torch.load(pth_path, map_location="cpu", weights_only=True))
+    model.eval()
 
-# 3. Evaluate in test
-correct, total = 0, 0
-with torch.no_grad():
-    for images, labels in testloader:
-        outputs = model_int8(images)
-        _, predicted = torch.max(outputs.data, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
+    dummy = spec.dummy_input()
+    onnx_path = os.path.join(MODELS_ROOT, spec.onnx_float_filename)
 
-accuracy = 100 * correct / total
-print(f"Test accuracy (quantized model): {accuracy:.2f}%")
+    torch.onnx.export(
+        model,
+        dummy,
+        onnx_path,
+        opset_version=opset,
+        input_names=["input"],
+        output_names=["logits"],
+        dynamic_axes={"input": {0: "batch"}, "logits": {0: "batch"}},
+    )
 
-# 4. Export to ONNX
-dummy_input = torch.randn(1, 1, 28, 28)
-onnx_filename = MODELS_ROOT+"/mnist_quantized.onnx"
-torch.onnx.export(model_int8, dummy_input, onnx_filename, opset_version=13)
-print(f"Model saved at {onnx_filename}")
+    print(f"[OK] Exported float ONNX: {onnx_path}")
 
-# 6. Compare sizes
-pth_size = os.path.getsize(os.path.join(MODELS_ROOT, "mnist_baseline.pth")) / 1024
-onnx_size = os.path.getsize(onnx_filename) / 1024
-print(f"Size .pth: {pth_size:.1f} KB")
-print(f"Size .onnx: {onnx_size:.1f} KB")
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--model", required=True, choices=["mnist", "wine"])
+    ap.add_argument("--opset", type=int, default=13)
+    args = ap.parse_args()
+    export_float_onnx(args.model, args.opset)
+
+if __name__ == "__main__":
+    main()
