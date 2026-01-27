@@ -36,7 +36,7 @@ Status: ⏳ Planned
 
 ---
 
-## Phase 4 — FINN Pipeline (Planned)
+## Phase 4 — FINN Pipeline (In Progress)
 
 - Implement quantized models using Brevitas.
 - Train using QAT or PTQ.
@@ -44,7 +44,7 @@ Status: ⏳ Planned
 - Apply FINN transformations.
 - Generate FPGA accelerator.
 
-Status: ⏳ Planned
+Status: 🔄 In Progress
 
 ---
 
