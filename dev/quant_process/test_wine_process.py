@@ -10,10 +10,10 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
 from mlfpga.config import DATA_ROOT, MODELS_ROOT
-from mlfpga.models import WineClassificationNN
+from mlfpga.models.wine_classification import WineNet, QuantizableWineNet
 
 
-model = WineClassificationNN()
+model = QuantizableWineNet()
 
 data = load_wine()
 X = data['data']
@@ -47,7 +47,7 @@ q_model = model.quantize_post_training(
     calib_loader=testloader,
     backend="qnnpack", 
     max_batches=10,
-    filename="wine_q.pth",
+    filename="wine_quantized.pth",
 )
 
 q_model.export_onnx(
