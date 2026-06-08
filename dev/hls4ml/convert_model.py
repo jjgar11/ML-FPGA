@@ -7,12 +7,16 @@ from mlfpga.config import MODELS_ROOT, HLS4ML_ROOT
 from mlfpga.models.registry import get_model_spec
 
 
-def make_hls_config(model, input_shape, mode):
+def make_hls_config(model, input_shape, mode, backend, reuse_factor=1):
+    # VivadoAccelerator shares the same config structure as Vivado.
+    # config_from_pytorch_model passes input_shape to create_initial_config(),
+    # which VivadoAcceleratorBackend doesn't accept — use "Vivado" for config generation.
+    config_backend = "Vivado" if backend == "VivadoAccelerator" else backend
     cfg = hls4ml.utils.config_from_pytorch_model(
         model,
         input_shape=input_shape,
         granularity="name",
-        backend="Vivado",
+        backend=config_backend,
     )
 
     # Precision policy
@@ -30,7 +34,7 @@ def make_hls_config(model, input_shape, mode):
         raise ValueError("mode must be int8 or int4")
 
     cfg["Model"]["Precision"] = model_prec
-    cfg["Model"]["ReuseFactor"] = 1
+    cfg["Model"]["ReuseFactor"] = reuse_factor
 
     for _, layer_cfg in cfg["LayerName"].items():
         layer_cfg["Precision"] = {
@@ -43,48 +47,159 @@ def make_hls_config(model, input_shape, mode):
     return cfg
 
 
-def convert(model_name: str, mode: str, part: str, csim: bool, synth: bool):
+def load_model(model_name):
     # 1) Get model spec
     spec = get_model_spec(model_name)
 
     # 2) Load PyTorch float model
     model = spec.float_cls()
     pth_path = os.path.join(MODELS_ROOT, spec.pth_filename)
-    model.load_state_dict(torch.load(pth_path, map_location="cpu", weights_only=True))
+
+    if not os.path.exists(pth_path):
+        raise FileNotFoundError(f"Model weights not found: {pth_path}")
+
+    state_dict = torch.load(
+        pth_path,
+        map_location="cpu",
+        weights_only=True,
+    )
+
+    model.load_state_dict(state_dict)
     model.eval()
 
+    return spec, model
+
+
+def convert(model_name, mode, part, backend, io_type_arg, reuse_factor, build, csim, synth):
+    spec, model = load_model(model_name)
+
+    io_type = io_type_arg if io_type_arg else (
+        "io_stream" if backend == "VivadoAccelerator" else "io_parallel"
+    )
+
     # 3) Build hls4ml config FROM PYTORCH (no ONNX)
-    cfg = make_hls_config(model, spec.input_shape_for_hls4ml, mode)
+    cfg = make_hls_config(
+        model=model,
+        input_shape=spec.input_shape_for_hls4ml,
+        mode=mode,
+        backend=backend,
+        reuse_factor=reuse_factor,
+    )
 
     # 4) Convert directly from PyTorch
-    out_dir = os.path.join(HLS4ML_ROOT, f"{model_name}_hls4ml_pytorch_{mode}")
+    out_dir = os.path.join(
+        HLS4ML_ROOT,
+        f"{model_name}_hls4ml_pytorch_{mode}_{backend.lower()}",
+    )
+
+    extra_kwargs = {}
+    if backend == "VivadoAccelerator":
+        # ultra96v2 is registered in supported_boards.json with the correct part and TCL template.
+        # Passing both board and part would conflict — board takes precedence in hls4ml.
+        extra_kwargs["board"] = "ultra96v2"
+    else:
+        extra_kwargs["part"] = part
 
     hls_model = hls4ml.converters.convert_from_pytorch_model(
         model,
-        input_shape=spec.input_shape_for_hls4ml,
         hls_config=cfg,
         output_dir=out_dir,
-        part=part,
-        backend="Vivado",
+        backend=backend,
+        io_type=io_type,
+        **extra_kwargs,
     )
 
-    # 5) Build
-    hls_model.compile()
-    # hls_model.build(csim=csim, synth=synth, vsynth=False)
+    # 5) Write project files to disk (compile() builds C-sim .so, optional for synthesis)
+    hls_model.write()
+    if backend != "VivadoAccelerator":
+        hls_model.compile()
 
     print(f"[OK] hls4ml project generated at: {out_dir}")
+    if backend == "VivadoAccelerator":
+        print("[INFO] VivadoAccelerator: io_stream + AXI-DMA. Run synthesis in the VM via TCL scripts.")
+
+    if build:
+        # vsynth=True runs Vivado synthesis on top of HLS — produces bitstream for VivadoAccelerator
+        hls_model.build(
+            csim=csim,
+            synth=synth,
+            vsynth=(backend == "VivadoAccelerator"),
+        )
+        print("[OK] hls4ml build finished")
+    else:
+        print("[INFO] Build skipped. Use --build inside the VM where Vivado/Vitis is installed.")
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True, choices=["mnist", "wine"])
-    ap.add_argument("--mode", required=True, choices=["int8", "int4"])
-    ap.add_argument("--part", default="xczu3eg-sbva484-1-e")
-    ap.add_argument("--csim", action="store_true")
-    ap.add_argument("--synth", action="store_true")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
 
-    convert(args.model, args.mode, args.part, args.csim, args.synth)
+    parser.add_argument(
+        "--model",
+        required=True,
+        choices=["mnist", "wine"],
+    )
+
+    parser.add_argument(
+        "--mode",
+        required=True,
+        choices=["int8", "int4"],
+    )
+
+    parser.add_argument(
+        "--part",
+        default="xczu3eg-sbva484-1-i",  # Ultra96-v2 exact part (speed grade -1-i)
+    )
+
+    parser.add_argument(
+        "--backend",
+        choices=["Vivado", "Vitis", "VivadoAccelerator"],
+        default="Vivado",
+    )
+
+    parser.add_argument(
+        "--io-type",
+        choices=["io_parallel", "io_stream"],
+        default=None,
+        dest="io_type",
+        help="Override io_type (default: io_parallel for Vivado, io_stream for VivadoAccelerator)",
+    )
+
+    parser.add_argument(
+        "--reuse",
+        type=int,
+        default=1,
+        dest="reuse_factor",
+        help="ReuseFactor: higher = less parallel hardware, less RAM during synthesis (default: 1)",
+    )
+
+    parser.add_argument(
+        "--build",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--csim",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--synth",
+        action="store_true",
+    )
+
+    args = parser.parse_args()
+
+    convert(
+        model_name=args.model,
+        mode=args.mode,
+        part=args.part,
+        backend=args.backend,
+        io_type_arg=args.io_type,
+        reuse_factor=args.reuse_factor,
+        build=args.build,
+        csim=args.csim,
+        synth=args.synth,
+    )
 
 
 if __name__ == "__main__":
