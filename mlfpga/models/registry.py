@@ -5,6 +5,7 @@ import torch.nn as nn
 
 from .digit_classification import DigitClassificationNN
 from .wine_classification import WineNet
+from .gtsrb import TinyCNN
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -15,7 +16,7 @@ class ModelSpec:
     dummy_input: Callable[[], torch.Tensor]
     input_shape_for_hls4ml: Tuple[int, ...]  # if needed later
 
-MODEL_REGISTRY = {
+MODEL_REGISTRY: dict = {
     "mnist": ModelSpec(
         name="mnist",
         float_cls=DigitClassificationNN,
@@ -31,6 +32,16 @@ MODEL_REGISTRY = {
         onnx_float_filename="wine_float.onnx",
         dummy_input=lambda: torch.randn(1, 13),
         input_shape_for_hls4ml=(13,),
+    ),
+}
+
+    "gtsrb": ModelSpec(
+        name="gtsrb",
+        float_cls=TinyCNN,
+        pth_filename="gtsrb.pth",
+        onnx_float_filename="gtsrb_float.onnx",
+        dummy_input=lambda: __import__("torch").randn(1, 3, 32, 32),
+        input_shape_for_hls4ml=(1, 3, 32, 32),
     ),
 }
 
