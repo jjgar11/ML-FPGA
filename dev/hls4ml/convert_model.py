@@ -48,25 +48,25 @@ def make_hls_config(model, input_shape, mode, backend, reuse_factor=1):
 
 
 def load_model(model_name):
-    # 1) Get model spec
     spec = get_model_spec(model_name)
-
-    # 2) Load PyTorch float model
-    model = spec.float_cls()
     pth_path = os.path.join(MODELS_ROOT, spec.pth_filename)
 
     if not os.path.exists(pth_path):
         raise FileNotFoundError(f"Model weights not found: {pth_path}")
 
-    state_dict = torch.load(
-        pth_path,
-        map_location="cpu",
-        weights_only=True,
-    )
+    state_dict = torch.load(pth_path, map_location="cpu", weights_only=True)
+
+    # face_mlp: detect architecture from saved weights to handle variable num_classes
+    if model_name == "face_mlp":
+        from mlfpga.models.face_mlp import FaceMLP
+        n_components = state_dict["net.0.weight"].shape[1]
+        num_classes  = state_dict["net.4.weight"].shape[0]
+        model = FaceMLP(n_components=n_components, num_classes=num_classes)
+    else:
+        model = spec.float_cls()
 
     model.load_state_dict(state_dict)
     model.eval()
-
     return spec, model
 
 
@@ -74,7 +74,7 @@ def convert(model_name, mode, part, backend, io_type_arg, reuse_factor, build, c
     spec, model = load_model(model_name)
 
     io_type = io_type_arg if io_type_arg else (
-        "io_stream" if backend == "VivadoAccelerator" else "io_parallel"
+        "io_stream" if backend == "VivadoAccelerator" else spec.default_io_type
     )
 
     # 3) Build hls4ml config FROM PYTORCH (no ONNX)
@@ -136,7 +136,7 @@ def main():
     parser.add_argument(
         "--model",
         required=True,
-        choices=["mnist", "wine"],
+        choices=["mnist", "wine", "gtsrb", "nav_cnn", "face_mlp"],
     )
 
     parser.add_argument(
