@@ -30,7 +30,8 @@ def export_float_onnx(model_name: str, opset: int = 13):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True, choices=["mnist", "wine"])
+    ap.add_argument("--model", required=True,
+                    choices=["mnist", "wine", "gtsrb", "gtsrb_gap", "nav_cnn"])
     ap.add_argument("--opset", type=int, default=13)
     args = ap.parse_args()
     export_float_onnx(args.model, args.opset)

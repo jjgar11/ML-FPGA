@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from .digit_classification import DigitClassificationNN
 from .wine_classification import WineNet
-from .gtsrb import TinyCNN as GtsrbCNN
+from .gtsrb import TinyCNN as GtsrbCNN, TinyCNN_GAP as GtsrbCNN_GAP
 from .nav_cnn import NavCNN
 from .face_mlp import FaceMLP
 
@@ -48,6 +48,17 @@ MODEL_REGISTRY: dict = {
         onnx_float_filename="gtsrb_float.onnx",
         dummy_input=lambda: torch.randn(1, 3, 32, 32),
         input_shape_for_hls4ml=(1, 3, 32, 32),
+        default_io_type="io_stream",
+    ),
+    # FPGA-preferred variant: GlobalAveragePooling replaces Flatten+FC1 (1024→128).
+    # ~29K params vs ~160K — fits comfortably in Ultra96 LUT budget.
+    "gtsrb_gap": ModelSpec(
+        name="gtsrb_gap",
+        float_cls=GtsrbCNN_GAP,
+        pth_filename="gtsrb_gap.pth",
+        onnx_float_filename="gtsrb_gap_float.onnx",
+        dummy_input=lambda: torch.randn(1, 3, 64, 64),
+        input_shape_for_hls4ml=(1, 3, 64, 64),
         default_io_type="io_stream",
     ),
     "nav_cnn": ModelSpec(
