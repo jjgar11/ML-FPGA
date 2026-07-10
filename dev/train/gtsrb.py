@@ -1,21 +1,26 @@
 """
-Train TinyCNN_GAP on GTSRB + Synset Signset Germany (opcional).
+Train TinyCNN_GAP on GTSRB, Synset Signset Germany, or both.
 
-Synset Signset Germany (Fraunhofer IOSB/IPA, ITSC 2024) es un dataset
-sintético de alta calidad que mejora la generalización del modelo al
-entrenar con señales perfectamente nítidas y diversas condiciones.
-Las clases 0-42 de Synset corresponden exactamente a las 43 de GTSRB.
-
-Dataset Synset: synset.de/datasets/synset-signset-ger/
-Descarga el zip, extráelo y pasa la ruta con --synset-dir.
+Synset Signset Germany (Fraunhofer IOSB/IPA, ITSC 2024): dataset sintético
+de alta calidad. Las primeras 43 clases corresponden exactamente a GTSRB.
+Estructura esperada: SynsetSignsetGermany/Cycles/{N}_{Name}/*.png
+Split oficial en CSV: SynsetSignsetGermany/../cyclesGTSRB_{train,val}.csv
 
 Uso:
-    # Solo GTSRB filtrado (sin Synset):
-    python dev/train/gtsrb.py --arch gtsrb_gap --epochs 30 --min-size 32
+    # Solo GTSRB:
+    python dev/train/gtsrb.py --arch gtsrb_gap --epochs 30
 
-    # GTSRB + Synset Signset (recomendado):
-    python dev/train/gtsrb.py --arch gtsrb_gap --epochs 30 --min-size 32 \
-        --synset-dir /ruta/a/SynsetSignsetGermany/Cycles
+    # Solo Synset (split oficial, para comparar con el paper):
+    python dev/train/gtsrb.py --arch gtsrb_gap --epochs 30 --synset-only \
+        --synset-dir data/synset/SynsetSignsetGermany
+
+    # GTSRB + Synset mezclados:
+    python dev/train/gtsrb.py --arch gtsrb_gap --epochs 30 \
+        --synset-dir data/synset/SynsetSignsetGermany/Cycles
+
+    # Fine-tune sobre GTSRB a partir de pesos Synset:
+    python dev/train/gtsrb.py --arch gtsrb_gap --epochs 15 \
+        --finetune data/models/gtsrb_gap_synset.pth --lr 1e-4
 
 Salida:
     data/models/gtsrb_gap.pth
@@ -92,38 +97,61 @@ class SynsetDataset(Dataset):
     """
     Carga las primeras 43 clases de Synset Signset Germany.
 
-    Estructura esperada del directorio (apunta al renderer elegido):
-        <root>/
-            00000/   ← clase 0
-                *.png
-            00001/   ← clase 1
-            ...
-            00042/   ← clase 42
+    Modo scan (sin csv_file):
+        root apunta a Cycles/; escanea todas las imágenes de clases 0-42.
+        Soporta nombres con prefijo numérico (0_Geschwindigkeit20) y zero-padded (00000).
 
-    Ejemplo:
-        SynsetSignsetGermany/
-            Cycles/      ← pasa esta ruta como --synset-dir
-                00000/
-                ...
-            OGRE/
-                ...
+    Modo CSV (con csv_file):
+        root apunta a SynsetSignsetGermany/ (un nivel arriba de Cycles/).
+        csv_file lista paths relativos tipo 'Cycles\\0_Geschwindigkeit20\\0_cycles.png'.
+        Usa el split oficial train/val del paper.
     """
     EXTS = {".png", ".jpg", ".jpeg", ".ppm"}
 
-    def __init__(self, root, transform=None):
+    def __init__(self, root, transform=None, csv_file=None):
         self.transform = transform
-        self.samples   = []   # list of (path, class_id)
+        self.samples   = []
 
         if not os.path.isdir(root):
             raise FileNotFoundError(f"Synset dir no encontrado: {root}")
 
+        if csv_file:
+            self._load_from_csv(root, csv_file)
+        else:
+            self._scan_dirs(root)
+
+    def _load_from_csv(self, root, csv_file):
+        with open(csv_file) as f:
+            lines = [l.strip() for l in f if l.strip()]
+        loaded = skipped = 0
+        for rel in lines:
+            rel_unix = rel.replace("\\", "/")
+            # class id = number prefix of the subdirectory (e.g. "Cycles/0_Geschw../file.png" → 0)
+            parts = rel_unix.split("/")
+            if len(parts) < 3:
+                continue
+            try:
+                class_id = int(parts[1].split("_")[0])
+            except ValueError:
+                continue
+            if class_id > 42:
+                continue
+            if os.path.splitext(parts[-1])[1].lower() not in self.EXTS:
+                skipped += 1
+                continue
+            full = os.path.join(root, rel_unix)
+            if os.path.isfile(full):
+                self.samples.append((full, class_id))
+                loaded += 1
+        print(f"[SynsetDataset] {csv_file}")
+        print(f"  Loaded images: {loaded}  |  skipped (json/missing): {skipped}")
+
+    def _scan_dirs(self, root):
         found_classes = 0
         for class_id in range(43):
-            # Support both zero-padded (00000) and named (0_Geschwindigkeit20) formats
             folder = os.path.join(root, f"{class_id:05d}")
             if not os.path.isdir(folder):
-                import glob as _glob
-                matches = _glob.glob(os.path.join(root, f"{class_id}_*"))
+                matches = glob.glob(os.path.join(root, f"{class_id}_*"))
                 folder = next((m for m in matches if os.path.isdir(m)), None)
                 if folder is None:
                     continue
@@ -131,7 +159,6 @@ class SynsetDataset(Dataset):
             for fname in os.listdir(folder):
                 if os.path.splitext(fname)[1].lower() in self.EXTS:
                     self.samples.append((os.path.join(folder, fname), class_id))
-
         print(f"[SynsetDataset] {root}")
         print(f"  Clases encontradas: {found_classes}/43  |  Imágenes: {len(self.samples)}")
 
@@ -181,49 +208,65 @@ def eval_epoch(model, loader, criterion, device):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--arch",     choices=list(ARCH_MAP), default="gtsrb_gap",
-                        help="gtsrb=TinyCNN (baseline), gtsrb_gap=FPGA-optimised")
-    parser.add_argument("--epochs",   type=int, default=50)
-    parser.add_argument("--batch",    type=int, default=64)
-    parser.add_argument("--min-size", type=int, default=32,
-                        help="Descartar imágenes GTSRB con lado < N px (default 32)")
+    parser.add_argument("--arch",       choices=list(ARCH_MAP), default="gtsrb_gap")
+    parser.add_argument("--epochs",     type=int, default=50)
+    parser.add_argument("--batch",      type=int, default=64)
+    parser.add_argument("--lr",         type=float, default=1e-3)
+    parser.add_argument("--min-size",   type=int, default=32,
+                        help="Descartar imágenes GTSRB con lado < N px")
     parser.add_argument("--synset-dir", default=None,
-                        help="Ruta a las 43 clases de Synset Signset Germany "
-                             "(ej. .../SynsetSignsetGermany/Cycles)")
+                        help="Modo scan: ruta a Cycles/. "
+                             "Modo --synset-only: ruta a SynsetSignsetGermany/")
+    parser.add_argument("--synset-only", action="store_true",
+                        help="Entrenar y validar solo en Synset (split CSV oficial). "
+                             "--synset-dir debe apuntar a SynsetSignsetGermany/")
+    parser.add_argument("--finetune",   default=None, metavar="PTH",
+                        help="Cargar pesos de este .pth antes de entrenar (para fine-tune)")
+    parser.add_argument("--out-suffix", default="",
+                        help="Sufijo para el nombre del .pth de salida (ej. '_synset')")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}  Arch: {args.arch}  IMG_SIZE: {IMG_SIZE}")
 
     # --- Datasets ---
-    gtsrb_train = FilteredGTSRB(GTSRB_ROOT, split="train", download=True,
-                                 transform=TRAIN_TF, min_side=args.min_size)
-    val_ds = datasets.GTSRB(GTSRB_ROOT, split="test", download=True, transform=VAL_TF)
-
-    if args.synset_dir:
-        synset_ds  = SynsetDataset(args.synset_dir, transform=TRAIN_TF)
-        train_ds   = ConcatDataset([gtsrb_train, synset_ds])
-        print(f"[Mix] GTSRB {len(gtsrb_train)} + Synset {len(synset_ds)} "
-              f"= {len(train_ds)} imágenes de entrenamiento")
+    if args.synset_only:
+        if not args.synset_dir:
+            raise ValueError("--synset-only requiere --synset-dir apuntando a SynsetSignsetGermany/")
+        csv_dir  = os.path.join(DATA_ROOT, "synset")
+        train_ds = SynsetDataset(args.synset_dir, transform=TRAIN_TF,
+                                 csv_file=os.path.join(csv_dir, "cyclesGTSRB_train.csv"))
+        val_ds   = SynsetDataset(args.synset_dir, transform=VAL_TF,
+                                 csv_file=os.path.join(csv_dir, "cyclesGTSRB_val.csv"))
+        print(f"[Synset-only] train={len(train_ds)}  val={len(val_ds)}")
     else:
-        train_ds = gtsrb_train
-        print(f"[Solo GTSRB] {len(train_ds)} imágenes de entrenamiento")
+        gtsrb_train = FilteredGTSRB(GTSRB_ROOT, split="train", download=True,
+                                     transform=TRAIN_TF, min_side=args.min_size)
+        val_ds = datasets.GTSRB(GTSRB_ROOT, split="test", download=True, transform=VAL_TF)
+        if args.synset_dir:
+            synset_ds = SynsetDataset(args.synset_dir, transform=TRAIN_TF)
+            train_ds  = ConcatDataset([gtsrb_train, synset_ds])
+            print(f"[Mix] GTSRB {len(gtsrb_train)} + Synset {len(synset_ds)} = {len(train_ds)}")
+        else:
+            train_ds = gtsrb_train
+            print(f"[Solo GTSRB] {len(train_ds)} imágenes")
 
     train_dl = DataLoader(train_ds, batch_size=args.batch, shuffle=True,  num_workers=2)
     val_dl   = DataLoader(val_ds,   batch_size=args.batch, shuffle=False, num_workers=2)
-    print(f"Val: {len(val_ds)} imágenes")
 
     # --- Modelo ---
     model_cls = ARCH_MAP[args.arch]
     model     = model_cls(num_classes=43).to(device)
-    n_params  = sum(p.numel() for p in model.parameters())
-    print(f"Parámetros: {n_params:,}")
+    if args.finetune:
+        model.load_state_dict(torch.load(args.finetune, map_location="cpu", weights_only=True))
+        print(f"[Fine-tune] pesos cargados desde {args.finetune}")
+    print(f"Parámetros: {sum(p.numel() for p in model.parameters()):,}")
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
-    out_path = os.path.join(MODELS_ROOT, f"{args.arch}.pth")
+    out_path = os.path.join(MODELS_ROOT, f"{args.arch}{args.out_suffix}.pth")
     best_acc = 0.0
     for epoch in range(1, args.epochs + 1):
         tr_loss, tr_acc = train_epoch(model, train_dl, criterion, optimizer, device)
@@ -235,7 +278,7 @@ def main():
             torch.save(model.state_dict(), out_path)
             print(f"  → guardado ({out_path})")
 
-    print(f"Mejor val accuracy: {best_acc:.4f}")
+    print(f"\nMejor val accuracy: {best_acc:.4f}  →  {out_path}")
 
 
 if __name__ == "__main__":
