@@ -65,6 +65,9 @@ if ! echo -n "$(basename "$DTBO")" > "$SLOT/path"; then
     exit 1
 fi
 
+echo "[4b/5] Programming FPGA bitstream..."
+fpgautil -b "/lib/firmware/$(basename "$BITBIN")"
+
 echo "[5/5] Verifying..."
 STATUS=$(cat "$SLOT/status" 2>/dev/null || true)
 if [ "$STATUS" != "applied" ]; then
