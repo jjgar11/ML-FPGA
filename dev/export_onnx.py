@@ -48,7 +48,7 @@ def export_float_onnx(model_name: str, pth: str = None, out: str = None, opset: 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True,
-                    choices=["mnist", "wine", "gtsrb", "gtsrb_gap", "nav_cnn", "face_mlp"])
+                    choices=["mnist", "wine", "gtsrb", "gtsrb_gap", "gtsrb_gap_s", "nav_cnn", "face_mlp"])
     ap.add_argument("--pth",   default=None,
                     help="Path to .pth weights (default: registry path)")
     ap.add_argument("--out",   default=None,

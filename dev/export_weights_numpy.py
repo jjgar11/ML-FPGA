@@ -4,10 +4,12 @@ No requiere PyTorch en el destino — solo numpy.
 
 Uso:
     python dev/export_weights_numpy.py
+    python dev/export_weights_numpy.py --pth data/models/gtsrb_gap_mixed.pth
 Salida:
-    data/models/gtsrb_gap_weights.npz
+    data/models/gtsrb_gap_weights.npz  (o <mismo nombre>_weights.npz si se usa --pth)
 """
 
+import argparse
 import os
 import torch
 import numpy as np
@@ -15,11 +17,15 @@ import numpy as np
 from mlfpga.config import MODELS_ROOT
 from mlfpga.models.gtsrb import TinyCNN_GAP
 
-PTH_PATH = os.path.join(MODELS_ROOT, "gtsrb_gap.pth")
-NPZ_PATH = os.path.join(MODELS_ROOT, "gtsrb_gap_weights.npz")
-
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pth", default=None,
+                    help="Ruta al .pth (default: data/models/gtsrb_gap.pth)")
+    args = ap.parse_args()
+
+    PTH_PATH = args.pth or os.path.join(MODELS_ROOT, "gtsrb_gap.pth")
+    NPZ_PATH = os.path.splitext(PTH_PATH)[0] + "_weights.npz"
     model = TinyCNN_GAP(num_classes=43)
     model.load_state_dict(torch.load(PTH_PATH, map_location="cpu", weights_only=True))
     model.eval()
@@ -78,7 +84,9 @@ def main():
         return ww[:, None, None] * (x - mean[:, None, None]) / np.sqrt(var[:, None, None] + eps) + b[:, None, None]
 
     def relu_np(x): return np.maximum(0.0, x)
-    def pool_np(x): C, H, W = x.shape; return x[:, :H//2*2, :W//2*2].reshape(C, H//2, 2, W//2, 2).max(axis=(2, 4))
+    def pool_np(x):
+        C, H, W = x.shape
+        return x[:, :H//2*2, :W//2*2].reshape(C, H//2, 2, W//2, 2).max(axis=(2, 4))
 
     def forward_np(x):
         x = relu_np(bn_np(conv2d_np(x, w["conv1_w"], w["conv1_b"]), w["bn1_w"], w["bn1_b"], w["bn1_mean"], w["bn1_var"]))

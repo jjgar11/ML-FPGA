@@ -136,7 +136,7 @@ def main():
     parser.add_argument(
         "--model",
         required=True,
-        choices=["mnist", "wine", "gtsrb", "gtsrb_gap", "nav_cnn", "face_mlp"],
+        choices=["mnist", "wine", "gtsrb", "gtsrb_gap", "gtsrb_gap_s", "nav_cnn", "face_mlp"],
     )
 
     parser.add_argument(

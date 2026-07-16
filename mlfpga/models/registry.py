@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from .digit_classification import DigitClassificationNN
 from .wine_classification import WineNet
-from .gtsrb import TinyCNN as GtsrbCNN, TinyCNN_GAP as GtsrbCNN_GAP
+from .gtsrb import TinyCNN as GtsrbCNN, TinyCNN_GAP as GtsrbCNN_GAP, TinyCNN_GAP_S as GtsrbCNN_GAP_S
 from .nav_cnn import NavCNN
 from .face_mlp import FaceMLP
 
@@ -69,6 +69,16 @@ MODEL_REGISTRY: dict = {
         dummy_input=lambda: torch.randn(1, 1, 64, 64),
         input_shape_for_hls4ml=(1, 1, 64, 64),
         default_io_type="io_stream",
+    ),
+    # AXI-Lite FPGA test variant: 32×32 input (3072 inputs), no Dropout, fits Ultra96 with io_parallel.
+    "gtsrb_gap_s": ModelSpec(
+        name="gtsrb_gap_s",
+        float_cls=GtsrbCNN_GAP_S,
+        pth_filename="gtsrb_gap_s.pth",
+        onnx_float_filename="gtsrb_gap_s_float.onnx",
+        dummy_input=lambda: torch.randn(1, 3, 32, 32),
+        input_shape_for_hls4ml=(3, 32, 32),
+        default_io_type="io_parallel",
     ),
     # num_classes is set at training time; registry uses a default for hls4ml conversion.
     # Override by passing float_cls=lambda: FaceMLP(num_classes=N) before convert.

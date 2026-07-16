@@ -73,3 +73,43 @@ class TinyCNN_GAP(nn.Module):
     @property
     def param_count(self) -> int:
         return sum(p.numel() for p in self.parameters())
+
+
+class TinyCNN_GAP_S(nn.Module):
+    """
+    AXI-Lite FPGA variant of TinyCNN_GAP for synthesis testing.
+    32×32 input, reduced channels (3→16→32→64), no Dropout.
+    GAP: AvgPool2d(4) on 4×4 spatial (after 3×MaxPool2d(2) from 32px).
+    3×32×32 = 3072 inputs → feasible for AXI-Lite register interface.
+    """
+
+    def __init__(self, num_classes: int = 43):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 16, kernel_size=3, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.MaxPool2d(2),                               # 32→16
+            nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2),                               # 16→8
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2),                               # 8→4
+            nn.AvgPool2d(kernel_size=4),                   # GAP: 4×4→1×1
+            nn.Flatten(),
+        )
+        self.head = nn.Sequential(
+            nn.Linear(64, 128),
+            nn.ReLU(),
+            nn.Linear(128, num_classes),
+        )
+
+    def forward(self, x):
+        return self.head(self.features(x))
+
+    @property
+    def param_count(self) -> int:
+        return sum(p.numel() for p in self.parameters())

@@ -38,31 +38,38 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, ConcatDataset, Dataset
 
 from mlfpga.config import DATA_ROOT, MODELS_ROOT
-from mlfpga.models.gtsrb import TinyCNN, TinyCNN_GAP
+from mlfpga.models.gtsrb import TinyCNN, TinyCNN_GAP, TinyCNN_GAP_S
 
-ARCH_MAP = {"gtsrb": TinyCNN, "gtsrb_gap": TinyCNN_GAP}
+ARCH_MAP = {
+    "gtsrb":              TinyCNN,
+    "gtsrb_gap":          TinyCNN_GAP,
+    "gtsrb_gap_s":        TinyCNN_GAP_S,
+}
+
+# Default IMG_SIZE per arch (can be overridden with --img-size)
+ARCH_DEFAULT_SIZE = {"gtsrb": 32, "gtsrb_gap": 64, "gtsrb_gap_s": 32}
 
 GTSRB_ROOT = os.path.join(DATA_ROOT, "gtsrb")
-
-IMG_SIZE = 64   # 64×64 — mejor distinción de dígitos en señales de velocidad
 
 MEAN = (0.3337, 0.3064, 0.3171)
 STD  = (0.2672, 0.2564, 0.2629)
 
-TRAIN_TF = transforms.Compose([
-    transforms.Resize((IMG_SIZE + 8, IMG_SIZE + 8)),
-    transforms.RandomCrop(IMG_SIZE),
-    transforms.RandomRotation(15),
-    transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.3),
-    transforms.ToTensor(),
-    transforms.Normalize(MEAN, STD),
-])
 
-VAL_TF = transforms.Compose([
-    transforms.Resize((IMG_SIZE, IMG_SIZE)),
-    transforms.ToTensor(),
-    transforms.Normalize(MEAN, STD),
-])
+def make_transforms(img_size):
+    train_tf = transforms.Compose([
+        transforms.Resize((img_size + 8, img_size + 8)),
+        transforms.RandomCrop(img_size),
+        transforms.RandomRotation(15),
+        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.3),
+        transforms.ToTensor(),
+        transforms.Normalize(MEAN, STD),
+    ])
+    val_tf = transforms.Compose([
+        transforms.Resize((img_size, img_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(MEAN, STD),
+    ])
+    return train_tf, val_tf
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +129,7 @@ class SynsetDataset(Dataset):
 
     def _load_from_csv(self, root, csv_file):
         with open(csv_file) as f:
-            lines = [l.strip() for l in f if l.strip()]
+            lines = [ln.strip() for ln in f if ln.strip()]
         loaded = skipped = 0
         for rel in lines:
             rel_unix = rel.replace("\\", "/")
@@ -224,27 +231,32 @@ def main():
                         help="Cargar pesos de este .pth antes de entrenar (para fine-tune)")
     parser.add_argument("--out-suffix", default="",
                         help="Sufijo para el nombre del .pth de salida (ej. '_synset')")
+    parser.add_argument("--img-size",  type=int, default=None,
+                        help="Tamaño de imagen (default: 32 para gtsrb/gtsrb_gap_s, 64 para gtsrb_gap)")
     args = parser.parse_args()
 
+    img_size = args.img_size or ARCH_DEFAULT_SIZE[args.arch]
+    train_tf, val_tf = make_transforms(img_size)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}  Arch: {args.arch}  IMG_SIZE: {IMG_SIZE}")
+    print(f"Device: {device}  Arch: {args.arch}  IMG_SIZE: {img_size}")
 
     # --- Datasets ---
     if args.synset_only:
         if not args.synset_dir:
             raise ValueError("--synset-only requiere --synset-dir apuntando a SynsetSignsetGermany/")
         csv_dir  = os.path.join(DATA_ROOT, "synset")
-        train_ds = SynsetDataset(args.synset_dir, transform=TRAIN_TF,
+        train_ds = SynsetDataset(args.synset_dir, transform=train_tf,
                                  csv_file=os.path.join(csv_dir, "cyclesGTSRB_train.csv"))
-        val_ds   = SynsetDataset(args.synset_dir, transform=VAL_TF,
+        val_ds   = SynsetDataset(args.synset_dir, transform=val_tf,
                                  csv_file=os.path.join(csv_dir, "cyclesGTSRB_val.csv"))
         print(f"[Synset-only] train={len(train_ds)}  val={len(val_ds)}")
     else:
         gtsrb_train = FilteredGTSRB(GTSRB_ROOT, split="train", download=True,
-                                     transform=TRAIN_TF, min_side=args.min_size)
-        val_ds = datasets.GTSRB(GTSRB_ROOT, split="test", download=True, transform=VAL_TF)
+                                     transform=train_tf, min_side=args.min_size)
+        val_ds = datasets.GTSRB(GTSRB_ROOT, split="test", download=True, transform=val_tf)
         if args.synset_dir:
-            synset_ds = SynsetDataset(args.synset_dir, transform=TRAIN_TF)
+            synset_ds = SynsetDataset(args.synset_dir, transform=train_tf)
             train_ds  = ConcatDataset([gtsrb_train, synset_ds])
             print(f"[Mix] GTSRB {len(gtsrb_train)} + Synset {len(synset_ds)} = {len(train_ds)}")
         else:
@@ -269,8 +281,8 @@ def main():
     out_path = os.path.join(MODELS_ROOT, f"{args.arch}{args.out_suffix}.pth")
     best_acc = 0.0
     for epoch in range(1, args.epochs + 1):
-        tr_loss, tr_acc = train_epoch(model, train_dl, criterion, optimizer, device)
-        vl_loss, vl_acc = eval_epoch(model, val_dl,   criterion, device)
+        _, tr_acc = train_epoch(model, train_dl, criterion, optimizer, device)
+        _, vl_acc = eval_epoch(model, val_dl,   criterion, device)
         scheduler.step()
         print(f"Epoch {epoch:02d}/{args.epochs} | train {tr_acc:.3f} | val {vl_acc:.3f}")
         if vl_acc > best_acc:
