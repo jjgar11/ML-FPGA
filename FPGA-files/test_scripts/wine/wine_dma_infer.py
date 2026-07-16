@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Wine quality MLP inference via AXI DMA on Ultra96-v2.
 Load the overlay first:  ./load_overlay.sh wine_axi_dma
+
+Usage:
+  python3 wine_dma_infer.py [sample_index]   (default: 0)
+  python3 wine_dma_infer.py all              (run all samples, print accuracy)
 """
 
 import ctypes
@@ -8,6 +12,7 @@ import glob
 import mmap
 import os
 import struct
+import sys
 import time
 import json
 
@@ -23,18 +28,20 @@ S2MM_DA   = 0x48
 S2MM_DA_H = 0x4C
 S2MM_LEN  = 0x58
 
-CR_RS    = 0x00000001
-CR_RESET = 0x00000004
-SR_IDLE  = 0x00000002
-SR_ERR   = 0x00000070  # Internal | Slave | Decode error
+CR_RS      = 0b1
+CR_RESET   = 0b1 << 2
+SR_IDLE    = 0b1 << 1       # bit  1 — channel idle after transfer
+SR_HALTED  = 0b1            # bit  0 — channel halted (RS=0 or post-completion in some HW)
+SR_ERR     = 0b111 << 4     # bits 4-6 — DMAIntErr | DMASlvErr | DMADecErr
+SR_IOC_IRQ = 0b1 << 12      # bit 12 — transfer complete (set regardless of IrqEn)
 
 N_IN      = 13
 N_OUT     = 3
 IN_BYTES  = N_IN  * 4
 OUT_BYTES = N_OUT * 4
 
-# Cortex-A53: L1=32KB/core, L2=512KB shared. Writing 2MB (4×L2) forces all
-# dirty lines — including the DMA input buffer — to be written back to DDR.
+SENTINEL = [99.0, 98.0, 97.0]
+
 _CACHE_FLUSH_SIZE = 2 * 1024 * 1024
 
 libc = ctypes.CDLL(None)
@@ -85,7 +92,6 @@ class WineDMAInfer:
         self._regs = mmap.mmap(self._fd.fileno(), 0x10000,
                                mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
 
-        # Anonymous mmaps — one page each = physically contiguous
         self._in_mm  = mmap.mmap(-1, 4096)
         self._out_mm = mmap.mmap(-1, 4096)
         self._in_mm.write(b'\x00' * 4096)
@@ -93,7 +99,6 @@ class WineDMAInfer:
         self._out_mm.write(b'\x00' * 4096)
         self._out_mm.seek(0)
 
-        # ctypes views — must be deleted before closing mmaps
         self._in_c  = (ctypes.c_char * 4096).from_buffer(self._in_mm)
         self._out_c = (ctypes.c_char * 4096).from_buffer(self._out_mm)
 
@@ -105,11 +110,9 @@ class WineDMAInfer:
         self._reset()
         sr_mm2s = self._rd(MM2S_SR)
         sr_s2mm = self._rd(S2MM_SR)
-        print(f"After reset: MM2S_SR=0x{sr_mm2s:08X}  S2MM_SR=0x{sr_s2mm:08X}", end="")
-        if sr_mm2s == 0 or sr_s2mm == 0:
-            print("  <-- WARNING: should be 0x00000002, register access may be broken")
-        else:
-            print()
+        halted = (sr_mm2s & SR_HALTED) and (sr_s2mm & SR_HALTED)
+        status = "Halted (RS=1 needed)" if halted else "Running"
+        print(f"After reset: MM2S_SR=0x{sr_mm2s:08X}  S2MM_SR=0x{sr_s2mm:08X}  [{status}]")
 
     def _wr(self, off, val):
         self._regs.seek(off)
@@ -122,10 +125,14 @@ class WineDMAInfer:
     def _reset(self):
         self._wr(MM2S_CR, CR_RESET)
         self._wr(S2MM_CR, CR_RESET)
-        time.sleep(0.05)
+
+        while self._rd(MM2S_CR) & CR_RESET:
+            pass
+        while self._rd(S2MM_CR) & CR_RESET:
+            pass
+
         self._wr(MM2S_CR, CR_RS)
         self._wr(S2MM_CR, CR_RS)
-        time.sleep(0.01)
 
     def _wait(self, sr_off, label, timeout=2.0):
         t0 = time.time()
@@ -133,53 +140,100 @@ class WineDMAInfer:
             sr = self._rd(sr_off)
             if sr & SR_ERR:
                 raise RuntimeError(f"{label} error SR=0x{sr:08X}")
-            if sr & SR_IDLE:
+            # Accept Idle (bit 1) or IOC_Irq (bit 12) as completion.
+            # AXI DMA 7.1 in simple mode may signal Halted+IOC_Irq instead of Idle.
+            if sr & SR_IOC_IRQ:
                 return sr
             if time.time() - t0 > timeout:
                 raise TimeoutError(f"{label} timeout SR=0x{sr:08X}")
 
-    def infer(self, features, debug=False):
+    @staticmethod
+    def _sr_str(sr):
+        bits = []
+        bits.append(f"Halted={'1' if sr & SR_HALTED  else '0'}")
+        bits.append(f"Idle={'1'   if sr & SR_IDLE    else '0'}")
+        bits.append(f"IntErr={'1' if sr & 0b1 << 4   else '0'}")
+        bits.append(f"SlvErr={'1' if sr & 0b1 << 5   else '0'}")
+        bits.append(f"DecErr={'1' if sr & 0b1 << 6   else '0'}")
+        bits.append(f"IOC={'1'    if sr & SR_IOC_IRQ  else '0'}")
+        return f"0x{sr:08X}  [{', '.join(bits)}]"
+
+    def infer(self, features):
         assert len(features) == N_IN
 
         struct.pack_into(f'<{N_IN}f', self._in_c, 0, *[float(x) for x in features])
-        # Write sentinel values to out_buf before flush.
-        # After DMA: if TLAST arrived on beat 1, bytes 4-11 will still be 98.0/97.0.
-        # If TLAST arrived on beat 3, all 12 bytes will be replaced by model output.
-        struct.pack_into('<3f', self._out_c, 0, 99.0, 98.0, 97.0)
-        # Evict all L1+L2 dirty lines (including in_buf + out_buf sentinels) to DDR.
-        # Cortex-A53 L2=512KB; 2MB > 4×L2 guarantees full eviction.
+        struct.pack_into('<3f', self._out_c, 0, *SENTINEL)
         _flush_cpu_cache()
 
-        if debug:
-            check = struct.unpack_from(f'<{N_IN}f', self._in_c, 0)
-            print(f"  in_buf packed: {check[:3]}...")
+        # Clear IOC_Irq from previous transfer (write-1-to-clear) and re-assert RS.
+        self._wr(MM2S_SR, SR_IOC_IRQ)
+        self._wr(S2MM_SR, SR_IOC_IRQ)
+        self._wr(MM2S_CR, CR_RS)
+        self._wr(S2MM_CR, CR_RS)
 
-        # Arm S2MM (receiver) before kicking MM2S (sender)
-        self._wr(S2MM_DA,   self._out_phys & 0xFFFFFFFF)
-        self._wr(S2MM_DA_H, (self._out_phys >> 32) & 0xFFFFFFFF)
-        self._wr(S2MM_LEN,  OUT_BYTES)
+        print("  [1] Antes de armar — canales en reposo:")
+        print(f"        MM2S_SR = {self._sr_str(self._rd(MM2S_SR))}")
+        print(f"        S2MM_SR = {self._sr_str(self._rd(S2MM_SR))}")
 
-        if debug:
-            print(f"  S2MM_SR after arm: 0x{self._rd(S2MM_SR):08X}")
+        da   = self._out_phys & 0xFFFFFFFF
+        da_h = (self._out_phys >> 32) & 0xFFFFFFFF
+        print(f"  [addr] out_phys=0x{self._out_phys:010X}  DA=0x{da:08X}  DA_H=0x{da_h:08X}")
+        self._wr(S2MM_DA,   da)
+        self._wr(S2MM_DA_H, da_h)
+        print(f"  [addr] DA  leído de vuelta = 0x{self._rd(S2MM_DA):08X}")
+        print(f"  [addr] DA_H leído de vuelta = 0x{self._rd(S2MM_DA_H):08X}")
+
+        print("  [2] S2MM con dirección destino cargada, antes de escribir LEN:")
+        print(f"        MM2S_SR = {self._sr_str(self._rd(MM2S_SR))}")
+        print(f"        S2MM_SR = {self._sr_str(self._rd(S2MM_SR))}")
+
+        self._wr(S2MM_LEN,  20)  # larger than OUT_BYTES=12 to verify register update
+
+        print("  [3] S2MM armado (LEN escrito) — esperando datos del IP por AXI-Stream:")
+        print(f"        MM2S_SR = {self._sr_str(self._rd(MM2S_SR))}")
+        print(f"        S2MM_SR = {self._sr_str(self._rd(S2MM_SR))}")
 
         self._wr(MM2S_SA,   self._in_phys & 0xFFFFFFFF)
         self._wr(MM2S_SA_H, (self._in_phys >> 32) & 0xFFFFFFFF)
-        self._wr(MM2S_LEN,  IN_BYTES)
 
-        if debug:
-            print(f"  MM2S_SR after kick: 0x{self._rd(MM2S_SR):08X}")
+        print("  [4] MM2S con dirección origen cargada, antes de escribir LEN:")
+        print(f"        MM2S_SR = {self._sr_str(self._rd(MM2S_SR))}")
+        print(f"        S2MM_SR = {self._sr_str(self._rd(S2MM_SR))}")
+
+        self._wr(MM2S_LEN,  IN_BYTES)  # dispara la transferencia
+
+        print("  [5] MM2S disparado (LEN escrito) — transferencia en curso:")
+        print(f"        MM2S_SR = {self._sr_str(self._rd(MM2S_SR))}")
+        print(f"        S2MM_SR = {self._sr_str(self._rd(S2MM_SR))}")
 
         sr_mm2s = self._wait(MM2S_SR, 'MM2S')
         sr_s2mm = self._wait(S2MM_SR, 'S2MM')
 
-        if debug:
-            print(f"  Done: MM2S_SR=0x{sr_mm2s:08X}  S2MM_SR=0x{sr_s2mm:08X}")
-            print(f"  out_buf raw: {bytes(self._out_c[:OUT_BYTES]).hex()}")
+        s2mm_len_actual = self._rd(S2MM_LEN)
 
-        return list(struct.unpack_from('<3f', self._out_c, 0))
+        scores = list(struct.unpack_from('<3f', self._out_c, 0))
+        raw    = bytes(self._out_c[:OUT_BYTES]).hex()
+
+        # Dump primeros 64 bytes del buffer como floats (stride 4) buscando datos
+        # en offsets inesperados — si el bus es 64-bit los beats podrían estar en 0,8,16
+        print("  [dump] Primeros 64 bytes de out_buf como float32 (offset: valor):")
+        for i in range(0, 64, 4):
+            v = struct.unpack_from('<f', self._out_c, i)[0]
+            marker = ""
+            if i < OUT_BYTES and abs(v - SENTINEL[i // 4]) < 0.001:
+                marker = " ← sentinel sin cambiar"
+            elif i < OUT_BYTES and v != SENTINEL[i // 4]:
+                marker = " ← ESCRITO POR DMA"
+            elif i >= OUT_BYTES and abs(v) > 0.001:
+                marker = " ← dato fuera del rango esperado"
+            print(f"        [{i:2d}] {v:+.4f}{marker}")
+
+        beats_written = sum(1 for i, s in enumerate(scores) if s != SENTINEL[i])
+
+        return scores, beats_written, raw, sr_mm2s, sr_s2mm, s2mm_len_actual
 
     def close(self):
-        del self._in_c    # release buffer views before closing mmaps
+        del self._in_c
         del self._out_c
         self._regs.close()
         self._fd.close()
@@ -187,21 +241,48 @@ class WineDMAInfer:
         self._out_mm.close()
 
 
+def run_sample(dma, features, label, idx):
+    scores, beats_written, raw, sr_mm2s, sr_s2mm, s2mm_len_actual = dma.infer(features)
+    pred   = scores.index(max(scores))
+    labels = {0: 'low', 1: 'medium', 2: 'high'}
+    ok     = pred == label
+
+    print(f"\n[sample {idx}]  ground truth: class {label} ({labels[label]})")
+    print(f"  Scores:  {[f'{s:.4f}' for s in scores]}")
+    print(f"  raw hex: {raw}")
+    print(f"  SR:      MM2S=0x{sr_mm2s:08X}  S2MM=0x{sr_s2mm:08X}")
+    print(f"  S2MM_LENGTH actual: {s2mm_len_actual} bytes  (programado: {20})")
+
+    if beats_written < N_OUT:
+        remaining = [f'{SENTINEL[i]:.1f}' for i in range(beats_written, N_OUT)]
+        print(f"  !! TLAST BUG: only {beats_written}/{N_OUT} beats written — "
+              f"scores {list(range(beats_written, N_OUT))} are still sentinels {remaining}")
+    else:
+        print(f"  All {N_OUT} beats written OK")
+
+    print(f"  Predicted: class {pred} ({labels[pred]})  {'CORRECT' if ok else 'WRONG'}")
+    return ok
+
+
 def main():
-    dma = WineDMAInfer()
+    arg = sys.argv[1] if len(sys.argv) > 1 else "all"
 
     with open('/home/root/fpga/test_scripts/wine/wine_test_data.json') as f:
         data = json.load(f)
-    sample = data['X'][0]
-    print(f"{sample}")
+    X, y = data['X'], data['y']
 
-    print("\nRunning inference...")
-    scores = dma.infer(sample, debug=True)
+    dma = WineDMAInfer()
 
-    pred   = scores.index(max(scores))
-    labels = {0: 'low', 1: 'medium', 2: 'high'}
-    print(f"\nScores:    {[f'{s:.4f}' for s in scores]}")
-    print(f"Predicted: class {pred} ({labels[pred]} quality)")
+    if arg == "all":
+        correct = 0
+        for i, (feat, label) in enumerate(zip(X, y)):
+            ok = run_sample(dma, feat, label, i)
+            if ok:
+                correct += 1
+        print(f"\nAccuracy: {correct}/{len(X)} = {correct/len(X)*100:.1f}%")
+    else:
+        idx = int(arg)
+        run_sample(dma, X[idx], y[idx], idx)
 
     dma.close()
 
