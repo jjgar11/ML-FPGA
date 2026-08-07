@@ -39,15 +39,17 @@ from torch.utils.data import DataLoader, ConcatDataset, Dataset
 
 from mlfpga.config import DATA_ROOT, MODELS_ROOT
 from mlfpga.models.gtsrb import TinyCNN, TinyCNN_GAP, TinyCNN_GAP_S
+from mlfpga.models.gtsrb_brevitas import TinyCNN_GAP_Brevitas
 
 ARCH_MAP = {
     "gtsrb":              TinyCNN,
     "gtsrb_gap":          TinyCNN_GAP,
     "gtsrb_gap_s":        TinyCNN_GAP_S,
+    "gtsrb_gap_brevitas": TinyCNN_GAP_Brevitas,
 }
 
 # Default IMG_SIZE per arch (can be overridden with --img-size)
-ARCH_DEFAULT_SIZE = {"gtsrb": 32, "gtsrb_gap": 64, "gtsrb_gap_s": 32}
+ARCH_DEFAULT_SIZE = {"gtsrb": 32, "gtsrb_gap": 64, "gtsrb_gap_s": 32, "gtsrb_gap_brevitas": 64}
 
 GTSRB_ROOT = os.path.join(DATA_ROOT, "gtsrb")
 
