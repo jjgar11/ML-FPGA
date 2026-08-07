@@ -1,0 +1,4 @@
+all:
+{
+    test_DMA_wrapper.bit
+}

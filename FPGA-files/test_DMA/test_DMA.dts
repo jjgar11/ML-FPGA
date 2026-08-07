@@ -1,0 +1,24 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    fragment@0 {
+        target-path = "/fpga-full";
+        __overlay__ {
+            firmware-name = "test_DMA_wrapper.bit.bin";
+        };
+    };
+
+    fragment@1 {
+        target-path = "/amba";
+        __overlay__ {
+            #address-cells = <2>;
+            #size-cells = <2>;
+
+            gpio_0: gpio@a0000000 {
+                compatible = "generic-uio";
+                reg = <0x0 0xa0000000 0x0 0x10000>;
+            };
+        };
+    };
+};

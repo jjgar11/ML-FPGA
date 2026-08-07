@@ -1,0 +1,26 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    fragment@1 {
+        target-path = "/fpga-full";
+        __overlay__ {
+            firmware-name = "design_1_wrapper_snooper.bit.bin";
+        };
+    };
+
+    fragment@2 {
+        target-path = "/amba_pl@0";
+        __overlay__ {
+            wine_dma_0: dma@80000000 {
+                compatible = "generic-uio";
+                reg = <0x0 0x80000000 0x0 0x10000>;
+            };
+            snooper_0: snooper@80010000 {
+                compatible = "generic-uio";
+                reg = <0x0 0x80010000 0x0 0x10000>;
+                label = "snooper";
+            };
+        };
+    };
+};
