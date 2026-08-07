@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Diagnóstico del AXI DMA (7.1) y del AXI S2MM Snooper via UIO.
+Diagnostics for the AXI DMA (7.1) and the AXI S2MM Snooper via UIO.
 
-Modos:
-  python3 dma_diag.py          — diagnóstico estándar del DMA
-  python3 dma_diag.py --snoop  — lee registros del snooper tras una inferencia
-  python3 dma_diag.py --clear  — limpia los contadores del snooper
+Modes:
+  python3 dma_diag.py          — standard DMA diagnostics
+  python3 dma_diag.py --snoop  — reads snooper registers after an inference
+  python3 dma_diag.py --clear  — clears the snooper counters
 """
 import mmap, struct, time, os, sys, glob
 
@@ -19,8 +19,8 @@ REGS = {
 }
 
 # AXI DMA 7.1 simple-mode reset default:
-# DMACR = 0x00010002  (IRQ_Threshold=1 en bits[23:16]=0x01, RS=0, bit1=1)
-# DMASR = 0x00000001  (Halted=1, porque RS=0)
+# DMACR = 0x00010002  (IRQ_Threshold=1 in bits[23:16]=0x01, RS=0, bit1=1)
+# DMASR = 0x00000001  (Halted=1, because RS=0)
 DMA_RESET_DMACR = 0x00010002
 DMA_RESET_DMASR = 0x00000001
 
@@ -59,8 +59,8 @@ def decode_dmasr(v):
 def main():
     uio_dev, uio_name = find_uio()
     if uio_dev is None:
-        print(f"ERROR: No se encontró UIO en 0x{DMA_BASE:08x}")
-        print("¿Cargaste el overlay?  ./load_overlay.sh wine_axi_dma  (o wine_axi_dma_snooper)")
+        print(f"ERROR: No UIO found at 0x{DMA_BASE:08x}")
+        print("Did you load the overlay?  ./load_overlay.sh wine_axi_dma  (or wine_axi_dma_snooper)")
         sys.exit(1)
     print(f"UIO: {uio_dev}  ({uio_name})  @ 0x{DMA_BASE:08x}")
 
@@ -70,41 +70,41 @@ def main():
     rd = lambda off: struct.unpack('<I', m[off:off+4])[0]
     wr = lambda off, v: m.__setitem__(slice(off, off+4), struct.pack('<I', v))
 
-    print("\n[1] Registros actuales:")
+    print("\n[1] Current registers:")
     for name, off in REGS.items():
         v = rd(off)
         dec = decode_dmacr(v) if 'DMACR' in name else decode_dmasr(v)
         print(f"    {name:15s} = 0x{v:08x}  {dec}")
 
-    print("\n[2] Test escritura->lectura en MM2S_DMACR:")
-    # Escribir RESET bit (0x4) — hardware lo auto-limpia y vuelve al default
+    print("\n[2] Write->read test on MM2S_DMACR:")
+    # Write RESET bit (0x4) — hardware auto-clears it and returns to default
     wr(0x00, 0x00000004)
     time.sleep(0.05)
     rb = rd(0x00)
-    print(f"    Escribí  0x00000004 (RESET bit)")
-    print(f"    Leí      0x{rb:08x}")
+    print(f"    Wrote    0x00000004 (RESET bit)")
+    print(f"    Read     0x{rb:08x}")
 
     if rb == 0x00000000:
-        print("    >> FALLO: AXI-Lite no responde (todos ceros). Bitstream roto o FPGA no programada.")
+        print("    >> FAILURE: AXI-Lite is not responding (all zeros). Broken bitstream or FPGA not programmed.")
     elif rb == DMA_RESET_DMACR:
-        print(f"    >> OK: DMA respondió al reset con el valor default correcto (0x{DMA_RESET_DMACR:08x})")
-        print(f"       IRQ_Threshold=1 + bit1=1 es el DMACR estándar tras reset. No es un error.")
+        print(f"    >> OK: DMA responded to reset with the correct default value (0x{DMA_RESET_DMACR:08x})")
+        print(f"       IRQ_Threshold=1 + bit1=1 is the standard DMACR after reset. Not an error.")
     elif rb == 0x00000004:
-        print("    >> OK parcial: el reset bit no se auto-limpió todavía (espera más)")
+        print("    >> Partial OK: the reset bit hasn't auto-cleared yet (wait longer)")
     else:
-        print(f"    >> Valor inesperado 0x{rb:08x} — puede ser un estado de transición")
+        print(f"    >> Unexpected value 0x{rb:08x} — could be a transitional state")
 
-    print("\n[3] Registros tras reset:")
+    print("\n[3] Registers after reset:")
     for name, off in REGS.items():
         v = rd(off)
         dec = decode_dmacr(v) if 'DMACR' in name else decode_dmasr(v)
         status = ""
         if name == 'MM2S_DMASR' or name == 'S2MM_DMASR':
             if v & 0x70:
-                status = "  !! ERRORES DE BUS"
+                status = "  !! BUS ERRORS"
         print(f"    {name:15s} = 0x{v:08x}  {dec}{status}")
 
-    print("\n[4] Arrancar DMA (RS=1) y verificar Idle:")
+    print("\n[4] Start DMA (RS=1) and check Idle:")
     wr(0x00, 0x00000001)  # MM2S RS=1
     wr(0x30, 0x00000001)  # S2MM RS=1
     time.sleep(0.02)
@@ -115,32 +115,32 @@ def main():
     print(f"    MM2S_DMASR = 0x{mm2s_sr:08x}  Idle={mm2s_idle}")
     print(f"    S2MM_DMASR = 0x{s2mm_sr:08x}  Idle={s2mm_idle}")
     if mm2s_idle and s2mm_idle:
-        print("    >> OK: ambos canales Idle. DMA listo para transferencia.")
+        print("    >> OK: both channels Idle. DMA ready for transfer.")
     elif mm2s_sr == 0 or s2mm_sr == 0:
-        print("    >> NORMAL: SR=0 (Halted=0, Idle=0) con RS=1 = DMA corriendo sin transferencia activa.")
-        print("       Con ap_ctrl_none la IP espera TVALID en in_r. No es un error.")
+        print("    >> NORMAL: SR=0 (Halted=0, Idle=0) with RS=1 = DMA running with no active transfer.")
+        print("       With ap_ctrl_none the IP waits for TVALID on in_r. Not an error.")
     else:
-        print("    >> Canales no Idle — puede estar en estado de error o transferencia activa")
+        print("    >> Channels not Idle — could be in an error state or an active transfer")
 
     m.close()
     f.close()
 
 
 # =============================================================================
-# AXI S2MM Snooper — leer registros de captura via UIO
+# AXI S2MM Snooper — read capture registers via UIO
 # =============================================================================
-# Mapa de registros del snooper (offset desde la base del UIO):
-#   0x00  AWADDR    — dirección AXI-M que el DataMover usó (debe ser out_phys)
-#   0x04  AWLEN     — burst length programado (beats = AWLEN+1)
-#   0x08  WDATA0    — dato en el beat 0 (float0 como uint32)
-#   0x0C  WDATA1    — dato en el beat 1 (float1 como uint32)
-#   0x10  WDATA2    — dato en el beat 2 (float2 como uint32)
-#   0x14  WLAST_AT  — en qué beat (0-based) se activó WLAST
-#   0x18  AW_CNT    — cuántas transacciones AW emitió el DataMover
-#   0x1C  W_CNT     — cuántos beats W se transfirieron en total
-#   0x20  B_CNT     — cuántas respuestas B (BRESP) llegaron
-#   0x24  BRESP     — último BRESP (0=OKAY, 2=SLVERR, 3=DECERR)
-#   0x28  CLEAR     — escribir 1 para resetear todos los contadores
+# Snooper register map (offset from the UIO base):
+#   0x00  AWADDR    — AXI-M address used by the DataMover (should be out_phys)
+#   0x04  AWLEN     — programmed burst length (beats = AWLEN+1)
+#   0x08  WDATA0    — data on beat 0 (float0 as uint32)
+#   0x0C  WDATA1    — data on beat 1 (float1 as uint32)
+#   0x10  WDATA2    — data on beat 2 (float2 as uint32)
+#   0x14  WLAST_AT  — beat (0-based) on which WLAST was asserted
+#   0x18  AW_CNT    — how many AW transactions the DataMover issued
+#   0x1C  W_CNT     — how many W beats were transferred in total
+#   0x20  B_CNT     — how many B responses (BRESP) arrived
+#   0x24  BRESP     — last BRESP (0=OKAY, 2=SLVERR, 3=DECERR)
+#   0x28  CLEAR     — write 1 to reset all counters
 
 SNOOP_REGS = [
     (0x00, 'AWADDR'),
@@ -159,7 +159,7 @@ BRESP_NAMES = {0: 'OKAY', 1: 'EXOKAY', 2: 'SLVERR', 3: 'DECERR'}
 
 
 def find_uio_by_name(name_fragment):
-    """Busca un UIO device cuyo nombre contenga name_fragment."""
+    """Finds a UIO device whose name contains name_fragment."""
     for d in sorted(glob.glob('/sys/class/uio/uio*')):
         try:
             name = open(f'{d}/name').read().strip()
@@ -179,9 +179,9 @@ def bits_to_float(u):
 def snoop_read():
     dev, name, addr, size = find_uio_by_name('snooper')
     if dev is None:
-        print("ERROR: no se encontró UIO para el snooper.")
-        print("  ¿Cargaste el bitstream con el snooper?")
-        print("  Busca en:  ls /sys/class/uio/*/name")
+        print("ERROR: no UIO found for the snooper.")
+        print("  Did you load the bitstream with the snooper?")
+        print("  Check:  ls /sys/class/uio/*/name")
         sys.exit(1)
 
     print(f"Snooper UIO: {dev}  ({name})  @ 0x{addr:08X}  size=0x{size:X}")
@@ -196,7 +196,7 @@ def snoop_read():
         v = rd(off)
         vals[name_r] = v
 
-    # Decodificación
+    # Decoding
     awaddr   = vals['AWADDR']
     awlen    = vals['AWLEN']
     beats    = awlen + 1
@@ -207,46 +207,46 @@ def snoop_read():
     b_cnt    = vals['B_CNT']
     bresp    = vals['BRESP']
 
-    print(f"  AWADDR    = 0x{awaddr:08X}   ← dirección que el DataMover usó")
-    print(f"  AWLEN     = {awlen}  → burst de {beats} beat(s) programado")
+    print(f"  AWADDR    = 0x{awaddr:08X}   ← address used by the DataMover")
+    print(f"  AWLEN     = {awlen}  → burst of {beats} beat(s) programmed")
     print()
     for i, d in enumerate(wdata):
         f32 = bits_to_float(d)
-        mark = " ← WLAST aquí" if i == wlast_at else ""
+        mark = " ← WLAST here" if i == wlast_at else ""
         print(f"  WDATA{i}    = 0x{d:08X}  ({f32:+.4f}){mark}")
     print()
-    print(f"  WLAST_AT  = beat {wlast_at}  (el DataMover terminó el burst en el beat {wlast_at})")
-    print(f"  AW_CNT    = {aw_cnt}  transacciones AW emitidas")
-    print(f"  W_CNT     = {w_cnt}  beats W transferidos")
-    print(f"  B_CNT     = {b_cnt}  respuestas B recibidas")
+    print(f"  WLAST_AT  = beat {wlast_at}  (the DataMover ended the burst on beat {wlast_at})")
+    print(f"  AW_CNT    = {aw_cnt}  AW transactions issued")
+    print(f"  W_CNT     = {w_cnt}  W beats transferred")
+    print(f"  B_CNT     = {b_cnt}  B responses received")
     print(f"  BRESP     = {bresp} ({BRESP_NAMES.get(bresp, '?')})")
 
     print()
-    # Diagnóstico
+    # Diagnostics
     if aw_cnt == 0:
-        print("!! AW_CNT=0: el DataMover NO emitió ninguna transacción AW. Bug antes del bus AXI-M.")
+        print("!! AW_CNT=0: the DataMover did NOT issue any AW transaction. Bug before the AXI-M bus.")
     else:
-        print(f"[AW] DataMover emitió {aw_cnt} transacción(es) AW.")
+        print(f"[AW] DataMover issued {aw_cnt} AW transaction(s).")
         if aw_cnt == 1:
-            print(f"     Programó burst de {beats} beat(s) (AWLEN={awlen}).")
+            print(f"     Programmed a burst of {beats} beat(s) (AWLEN={awlen}).")
             if beats == 1:
-                print("     !! Solo 1 beat por burst → AWLEN=0. El DataMover usa single-beat pese a LEN=12.")
+                print("     !! Only 1 beat per burst → AWLEN=0. The DataMover is using single-beat despite LEN=12.")
             elif beats == 3:
-                print("     OK: burst de 3 beats programado correctamente.")
+                print("     OK: burst of 3 beats programmed correctly.")
         else:
-            print(f"     {aw_cnt} transacciones para 12 bytes → DataMover divide en bursts pequeños.")
+            print(f"     {aw_cnt} transactions for 12 bytes → DataMover splits into small bursts.")
 
     if w_cnt == 0:
-        print("!! W_CNT=0: el canal W no transfirió ningún beat.")
+        print("!! W_CNT=0: the W channel did not transfer any beat.")
     else:
-        print(f"[W]  {w_cnt} beat(s) W transferidos. WLAST en beat {wlast_at}.")
+        print(f"[W]  {w_cnt} W beat(s) transferred. WLAST on beat {wlast_at}.")
         if wlast_at == 0 and beats > 1:
-            print("     !! WLAST en beat 0 pero AWLEN>0 → el canal W cerró el burst prematuramente.")
+            print("     !! WLAST on beat 0 but AWLEN>0 → the W channel closed the burst prematurely.")
 
     if bresp != 0:
-        print(f"!! BRESP={bresp} ({BRESP_NAMES.get(bresp,'?')}): el slave reportó error en la escritura.")
+        print(f"!! BRESP={bresp} ({BRESP_NAMES.get(bresp,'?')}): the slave reported an error on the write.")
     else:
-        print(f"[B]  BRESP=OKAY. El slave aceptó la escritura sin error.")
+        print(f"[B]  BRESP=OKAY. The slave accepted the write without error.")
 
     m.close()
     f.close()
@@ -255,14 +255,14 @@ def snoop_read():
 def snoop_clear():
     dev, name, addr, size = find_uio_by_name('snooper')
     if dev is None:
-        print("ERROR: no se encontró UIO para el snooper.")
+        print("ERROR: no UIO found for the snooper.")
         sys.exit(1)
     f = open(dev, 'r+b', buffering=0)
     m = mmap.mmap(f.fileno(), max(size, 4096))
     m[0x28:0x2C] = struct.pack('<I', 1)
     m.close()
     f.close()
-    print("Snooper: contadores limpiados.")
+    print("Snooper: counters cleared.")
 
 
 if __name__ == '__main__':

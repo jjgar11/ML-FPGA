@@ -15,7 +15,7 @@
             #address-cells = <2>;
             #size-cells = <2>;
 
-            gpio_0: gpio@a0000000 {
+            wine_dma_0: dma@a0000000 {
                 compatible = "generic-uio";
                 reg = <0x0 0xa0000000 0x0 0x10000>;
             };

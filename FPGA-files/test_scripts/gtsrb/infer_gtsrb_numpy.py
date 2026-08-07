@@ -1,15 +1,15 @@
 """
-GTSRB inference en numpy puro — compatible con Python 3.7 + OpenCV 3.4.3 en Ultra96.
-No requiere onnxruntime ni PyTorch. Solo numpy y opencv (para imagen/cámara).
+GTSRB inference in pure numpy — compatible with Python 3.7 + OpenCV 3.4.3 on Ultra96.
+Does not require onnxruntime or PyTorch. Only numpy and opencv (for image/camera).
 
-Preparación en la dev machine:
+Preparation on the dev machine:
     python dev/export_weights_numpy.py
     scp data/models/gtsrb_gap_weights.npz  root@10.164.145.147:/home/root/
     scp data/gtsrb_class_names.json         root@10.164.145.147:/home/root/
     scp dev/camera/infer_gtsrb_numpy.py     root@10.164.145.147:/home/root/
 
-Uso en la Ultra96:
-    python3 infer_gtsrb_numpy.py --image señal.ppm
+Usage on the Ultra96:
+    python3 infer_gtsrb_numpy.py --image sign.ppm
     python3 infer_gtsrb_numpy.py --cam 0 [--conf 0.80] [--confirm 3]
 """
 
@@ -27,12 +27,12 @@ IMG_SIZE = 64
 MEAN = np.array([0.3337, 0.3064, 0.3171], dtype=np.float32)
 STD  = np.array([0.2672, 0.2564, 0.2629], dtype=np.float32)
 
-MIN_ROI_PX   = 40    # lado mínimo del bounding box — descarta ruido pequeño
-MAX_ROI_FRAC = 0.30  # descarta ROIs que ocupen > 30% del frame (fondos de color)
+MIN_ROI_PX   = 40    # minimum bounding box side — discards small noise
+MAX_ROI_FRAC = 0.30  # discards ROIs occupying > 30% of the frame (colored backgrounds)
 
 
 # ---------------------------------------------------------------------------
-# Operaciones numpy del forward pass
+# Numpy operations for the forward pass
 # ---------------------------------------------------------------------------
 
 def conv2d(x, W, b, padding=1):
@@ -70,7 +70,7 @@ def softmax(x):
 
 
 # ---------------------------------------------------------------------------
-# Modelo
+# Model
 # ---------------------------------------------------------------------------
 
 class GtsrbNumpyModel:
@@ -91,7 +91,7 @@ class GtsrbNumpyModel:
         self.fc2_b   = w["fc2_b"].astype(np.float32)
 
     def forward(self, x):
-        """x: (3, H, W) float32 normalizado → logits (43,)  [cualquier resolución: GAP]"""
+        """x: (3, H, W) normalized float32 → logits (43,)  [any resolution: GAP]"""
         x = relu(batchnorm(conv2d(x, self.conv1_w, self.conv1_b), *self.bn1))
         x = maxpool2(x)
         x = relu(batchnorm(conv2d(x, self.conv2_w, self.conv2_b), *self.bn2))
@@ -104,31 +104,31 @@ class GtsrbNumpyModel:
 
 
 # ---------------------------------------------------------------------------
-# Filtro temporal — evita falsas detecciones de un solo frame
+# Temporal filter — avoids single-frame false detections
 # ---------------------------------------------------------------------------
 
 class TemporalFilter:
     """
-    Confirma una clase solo si aparece con conf >= conf_thr durante
-    `confirm` frames consecutivos. Se resetea tras `clear_after` frames
-    sin detección válida.
+    Confirms a class only if it appears with conf >= conf_thr during
+    `confirm` consecutive frames. Resets after `clear_after` frames
+    with no valid detection.
 
-    Uso típico:
+    Typical usage:
         filt = TemporalFilter(conf_thr=0.80, confirm=3)
-        result = filt.update([(cls, conf), ...])   # None o (cls, conf)
+        result = filt.update([(cls, conf), ...])   # None or (cls, conf)
     """
     def __init__(self, conf_thr=0.80, confirm=3, clear_after=5):
         self.conf_thr    = conf_thr
         self.confirm     = confirm
         self.clear_after = clear_after
         self._candidate  = None   # (class_id, conf)
-        self._streak     = 0      # frames consecutivos con el mismo candidato
-        self._no_det     = 0      # frames sin detección válida
+        self._streak     = 0      # consecutive frames with the same candidate
+        self._no_det     = 0      # frames with no valid detection
 
     def update(self, detections):
         """
-        detections: lista de (class_id, conf) ordenada por conf desc.
-        Retorna (class_id, conf) si hay detección confirmada, None si no.
+        detections: list of (class_id, conf) sorted by conf desc.
+        Returns (class_id, conf) if there is a confirmed detection, None otherwise.
         """
         valid = [(c, p) for c, p in detections if p >= self.conf_thr]
 
@@ -140,7 +140,7 @@ class TemporalFilter:
             return None
 
         self._no_det = 0
-        best = valid[0]   # mayor confianza
+        best = valid[0]   # highest confidence
 
         if self._candidate is not None and best[0] == self._candidate[0]:
             self._streak   += 1
@@ -164,7 +164,7 @@ class TemporalFilter:
 # ---------------------------------------------------------------------------
 
 def is_sharp(bgr_crop, min_var=50):
-    """Descarta crops sin bordes definidos (fondos, manchas de color uniforme)."""
+    """Discards crops without well-defined edges (backgrounds, uniform color blobs)."""
     gray = cv2.cvtColor(bgr_crop, cv2.COLOR_BGR2GRAY)
     return cv2.Laplacian(gray, cv2.CV_64F).var() >= min_var
 
@@ -178,22 +178,22 @@ def preprocess(bgr_crop):
 
 
 # ---------------------------------------------------------------------------
-# Detector de señales por color HSV
+# Sign detector by HSV color
 # ---------------------------------------------------------------------------
 
 def detect_sign_rois(frame, min_px=MIN_ROI_PX, max_frac=MAX_ROI_FRAC):
     """
-    Devuelve lista de (x, y, w, h, area) ordenada por área descendente.
-    Filtros:
-      - min_px: lado mínimo en píxeles
-      - max_frac: descarta ROIs que ocupen más de max_frac del frame (fondos)
-      - aspecto cuadrado (señales son circulares o triangulares ~1:1)
+    Returns a list of (x, y, w, h, area) sorted by descending area.
+    Filters:
+      - min_px: minimum side in pixels
+      - max_frac: discards ROIs occupying more than max_frac of the frame (backgrounds)
+      - square aspect (signs are circular or triangular ~1:1)
     """
     hsv    = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    r1     = cv2.inRange(hsv, (  0, 100, 80), ( 12, 255, 255))  # rojo cálido
-    r2     = cv2.inRange(hsv, (168, 100, 80), (180, 255, 255))  # rojo frío
-    blue   = cv2.inRange(hsv, (100,  80, 80), (130, 255, 255))  # señales azules (obligatorias)
-    yellow = cv2.inRange(hsv, ( 15, 120, 80), ( 38, 255, 255))  # señales amarillas (S>=120 evita cables/pantallas)
+    r1     = cv2.inRange(hsv, (  0, 100, 80), ( 12, 255, 255))  # warm red
+    r2     = cv2.inRange(hsv, (168, 100, 80), (180, 255, 255))  # cool red
+    blue   = cv2.inRange(hsv, (100,  80, 80), (130, 255, 255))  # blue signs (mandatory)
+    yellow = cv2.inRange(hsv, ( 15, 120, 80), ( 38, 255, 255))  # yellow signs (S>=120 avoids cables/screens)
     mask   = r1 | r2 | blue | yellow
 
     k    = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
@@ -210,21 +210,21 @@ def detect_sign_rois(frame, min_px=MIN_ROI_PX, max_frac=MAX_ROI_FRAC):
         if area < 1200:
             continue
         x, y, w, h = cv2.boundingRect(cnt)
-        if w * h > max_bbox:                        # bbox demasiado grande
+        if w * h > max_bbox:                        # bbox too large
             continue
         fill = area / max(w * h, 1)
-        if fill < 0.25:                             # blob disperso (borde, gradiente)
+        if fill < 0.25:                             # sparse blob (edge, gradient)
             continue
         perimeter = cv2.arcLength(cnt, True)
         if perimeter > 0:
             circularity = 4 * 3.14159 * area / (perimeter * perimeter)
-            if circularity < 0.35:                  # señales son compactas; franjas de pared no
+            if circularity < 0.35:                  # signs are compact; wall stripes are not
                 continue
         if w < min_px or h < min_px:
             continue
         if not (0.45 < w / max(h, 1) < 2.2):
             continue
-        # Excluir ROIs que tocan el borde del frame — fondos siempre llegan al borde
+        # Exclude ROIs that touch the frame border — backgrounds always reach the border
         border = 4
         if x <= border or y <= border or (x + w) >= fw - border or (y + h) >= fh - border:
             continue
@@ -232,14 +232,14 @@ def detect_sign_rois(frame, min_px=MIN_ROI_PX, max_frac=MAX_ROI_FRAC):
         x = max(0, x - pad);  y = max(0, y - pad)
         w = min(fw - x, w + 2 * pad);  h = min(fh - y, h + 2 * pad)
         boxes.append((x, y, w, h, area))
-    # Ordenar por área descendente — la señal real suele ser el objeto más grande
+    # Sort by descending area — the real sign is usually the largest object
     boxes.sort(key=lambda b: b[4], reverse=True)
     candidates = [(x, y, w, h) for x, y, w, h, _ in boxes]
     return _nms(candidates)
 
 
 def _nms(boxes, iou_thr=0.4):
-    """Elimina cajas solapadas (>iou_thr de IoU). Mantiene la de mayor área."""
+    """Removes overlapping boxes (>iou_thr IoU). Keeps the one with the largest area."""
     if len(boxes) <= 1:
         return boxes
     suppressed = [False] * len(boxes)
@@ -264,20 +264,20 @@ def _nms(boxes, iou_thr=0.4):
 
 
 # ---------------------------------------------------------------------------
-# Modos
+# Modes
 # ---------------------------------------------------------------------------
 
 def run_image(model, path, names, conf_thr):
     bgr = cv2.imread(path)
     if bgr is None:
-        print(f"No se pudo abrir: {path}"); sys.exit(1)
+        print(f"Could not open: {path}"); sys.exit(1)
     t0     = time.time()
     logits = model.forward(preprocess(bgr))
     ms     = (time.time() - t0) * 1000
     probs  = softmax(logits)
     top5   = np.argsort(probs)[::-1][:5]
-    print(f"Imagen : {path}   ({ms:.1f} ms)")
-    print(f"Umbral : {conf_thr:.0%}   (solo se reportaría si conf >= umbral)")
+    print(f"Image  : {path}   ({ms:.1f} ms)")
+    print(f"Threshold: {conf_thr:.0%}   (would only be reported if conf >= threshold)")
     for rank, c in enumerate(top5):
         bar    = "#" * int(probs[c] * 30)
         flag   = " ✓" if probs[c] >= conf_thr else ""
@@ -287,7 +287,7 @@ def run_image(model, path, names, conf_thr):
 def run_camera(model, cam_idx, names, conf_thr, confirm, save, debug, flip, top1=False):
     cap = cv2.VideoCapture(cam_idx)
     if not cap.isOpened():
-        print(f"No se pudo abrir /dev/video{cam_idx}"); sys.exit(1)
+        print(f"Could not open /dev/video{cam_idx}"); sys.exit(1)
     if debug:
         os.makedirs("gtsrb_debug", exist_ok=True)
     if save:
@@ -335,22 +335,22 @@ def run_camera(model, cam_idx, names, conf_thr, confirm, save, debug, flip, top1
             if top1 and detections:
                 detections = detections[:1]
 
-            # --- Imprimir cada frame ---
+            # --- Print each frame ---
             if not detections:
-                print(f"[{frame_idx:04d}] {fps:4.1f}fps  sin ROIs")
+                print(f"[{frame_idx:04d}] {fps:4.1f}fps  no ROIs")
             else:
                 for cls, conf, *_ in detections:
                     flag = "OK" if conf >= conf_thr else "  "
                     print(f"[{frame_idx:04d}] {fps:4.1f}fps  {flag}  [{cls:2d}] {names[cls]:<35} {conf:.2f}")
 
-            # --- Filtro temporal opcional (--confirm > 1) ---
+            # --- Optional temporal filter (--confirm > 1) ---
             if use_filter:
                 det_kv = [(c, p) for c, p, *_ in detections]
                 result = filt.update(det_kv)
                 if result:
-                    print(f"  >>> CONFIRMADO: [{result[0]:2d}] {names[result[0]]}  conf={result[1]:.2f}")
+                    print(f"  >>> CONFIRMED: [{result[0]:2d}] {names[result[0]]}  conf={result[1]:.2f}")
 
-            # --- Debug: guardar cada frame ---
+            # --- Debug: save each frame ---
             if debug:
                 ann = frame.copy()
                 for cls, conf, x, y, w, h in detections:
@@ -360,14 +360,14 @@ def run_camera(model, cam_idx, names, conf_thr, confirm, save, debug, flip, top1
                                 (x, max(y - 5, 12)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
                 if not detections:
-                    cv2.putText(ann, "sin ROIs", (10, 25),
+                    cv2.putText(ann, "no ROIs", (10, 25),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 cv2.imwrite(f"gtsrb_debug/f{frame_idx:05d}.jpg", ann)
 
             frame_idx += 1
 
     except KeyboardInterrupt:
-        print("\nDetenido.")
+        print("\nStopped.")
     finally:
         cap.release()
 
@@ -380,34 +380,34 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--weights", default="./gtsrb_gap_weights.npz")
     ap.add_argument("--names",   default="./gtsrb_class_names.json")
-    ap.add_argument("--image",   default=None,  help="Clasifica este recorte y sale")
+    ap.add_argument("--image",   default=None,  help="Classifies this crop and exits")
     ap.add_argument("--cam",     type=int, default=0)
     ap.add_argument("--conf",    type=float, default=0.80,
-                    help="Confianza mínima para reportar (default 0.80)")
+                    help="Minimum confidence to report (default 0.80)")
     ap.add_argument("--confirm", type=int, default=3,
-                    help="Frames consecutivos necesarios para confirmar (default 3)")
+                    help="Consecutive frames needed to confirm (default 3)")
     ap.add_argument("--save",    action="store_true",
-                    help="Guarda crops detectados en ./gtsrb_frames/")
+                    help="Saves detected crops to ./gtsrb_frames/")
     ap.add_argument("--debug",   action="store_true",
-                    help="Guarda frames anotados con ROIs en ./gtsrb_debug/ (cada 15 frames)")
+                    help="Saves annotated frames with ROIs to ./gtsrb_debug/ (every 15 frames)")
     ap.add_argument("--flip",    action="store_true",
-                    help="Voltea la imagen horizontalmente (corrige cámara en espejo)")
+                    help="Flips the image horizontally (corrects a mirrored camera)")
     ap.add_argument("--top1",   action="store_true",
-                    help="Devuelve solo la detección de mayor confianza por frame")
+                    help="Returns only the highest-confidence detection per frame")
     args = ap.parse_args()
 
-    for path, label in [(args.weights, "weights"), (args.names, "nombres")]:
+    for path, label in [(args.weights, "weights"), (args.names, "names")]:
         if not os.path.exists(path):
-            print(f"Archivo no encontrado: {path}")
+            print(f"File not found: {path}")
             sys.exit(1)
 
     with open(args.names) as f:
         raw = json.load(f)
     names = [raw[str(i)] for i in range(43)]
 
-    print(f"Cargando pesos: {args.weights}")
+    print(f"Loading weights: {args.weights}")
     model = GtsrbNumpyModel(args.weights)
-    print("Modelo cargado.")
+    print("Model loaded.")
 
     if args.image:
         run_image(model, args.image, names, args.conf)
