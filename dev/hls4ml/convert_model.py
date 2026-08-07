@@ -70,11 +70,140 @@ def load_model(model_name):
     return spec, model
 
 
+def _inject_custom_axi_wrapper(out_dir, model, spec):
+    """
+    hls_model.write() overwrites myproject_axi.cpp/h with a template that only sends
+    1 AXI-Stream beat regardless of N_OUT.  Replace it with an explicit loop that reads
+    N_IN float32 beats, runs inference, and writes N_OUT beats with TLAST on the last.
+
+    Uses ap_axiu<32,0,0,0> so TDATA/TLAST/TKEEP/TSTRB come out as proper separate
+    AXI4-Stream signals (32-bit TDATA) matching axi_dma_0 — the hls4ml stock struct
+    wrapper ({float; ap_uint<1> last}) packs last into TDATA itself (64-bit, no real
+    TLAST pin), which cannot connect to the DMA at all.
+    """
+    import torch as _torch
+
+    with _torch.no_grad():
+        dummy = _torch.zeros(1, *spec.input_shape_for_hls4ml)
+        out   = model(dummy)
+    n_in  = int(dummy[0].numel())
+    n_out = int(out[0].numel())
+
+    fw_dir = os.path.join(out_dir, "firmware")
+
+    header = f"""\
+#ifndef MYPROJECT_AXI_H_
+#define MYPROJECT_AXI_H_
+
+#include "myproject.h"
+#include "ap_axi_sdata.h"
+#include "hls_stream.h"
+#include "ap_int.h"
+
+static const unsigned N_IN  = {n_in};
+static const unsigned N_OUT = {n_out};
+
+void myproject_axi(hls::stream<ap_axiu<32,0,0,0>>& in_r,
+                   hls::stream<ap_axiu<32,0,0,0>>& out_r);
+
+#endif
+"""
+
+    body = """\
+#include "myproject_axi.h"
+#include "myproject.h"
+
+union f32_bits { float f; unsigned int u; };
+
+static ap_uint<32> float_to_bits(float f) {
+    f32_bits x; x.f = f; return (ap_uint<32>)x.u;
+}
+static float bits_to_float(ap_uint<32> b) {
+    f32_bits x; x.u = (unsigned int)b; return x.f;
+}
+
+void myproject_axi(hls::stream<ap_axiu<32,0,0,0>>& in_r,
+                   hls::stream<ap_axiu<32,0,0,0>>& out_r) {
+#pragma HLS INTERFACE axis port=in_r
+#pragma HLS INTERFACE axis port=out_r
+#pragma HLS INTERFACE ap_ctrl_none port=return
+
+    while (1) {
+        input_t  in_buf[N_IN];
+        result_t out_buf[N_OUT];
+
+        for (unsigned i = 0; i < N_IN; i++) {
+#pragma HLS PIPELINE
+            ap_axiu<32,0,0,0> pkt = in_r.read();
+            in_buf[i] = (input_t)bits_to_float(pkt.data);
+        }
+
+        myproject(in_buf, out_buf);
+
+        for (unsigned j = 0; j < N_OUT; j++) {
+#pragma HLS PIPELINE
+            ap_axiu<32,0,0,0> pkt;
+            pkt.data = float_to_bits((float)out_buf[j]);
+            pkt.last = (j == N_OUT - 1) ? 1 : 0;
+            pkt.keep = 0xF;
+            pkt.strb = 0xF;
+            out_r.write(pkt);
+        }
+    }
+}
+"""
+
+    with open(os.path.join(fw_dir, "myproject_axi.h"), "w") as f:
+        f.write(header)
+    with open(os.path.join(fw_dir, "myproject_axi.cpp"), "w") as f:
+        f.write(body)
+    print(f"[INFO] Injected custom myproject_axi wrapper (N_IN={n_in}, N_OUT={n_out})")
+
+    # Patch design.tcl: cap parallel jobs, route S2MM to HPC1 (separate from MM2S on HPC0),
+    # and force c_s2mm_burst_size=1 to work around a DataMover bug where multi-beat AXI-M
+    # bursts (AWLEN>0) only commit the first 4 bytes to DDR despite reporting IOC success.
+    design_tcl = os.path.join(out_dir, "design.tcl")
+    if os.path.exists(design_tcl):
+        with open(design_tcl) as f:
+            tcl = f.read()
+
+        patched = tcl.replace("-jobs 6", "-jobs 2").replace("-jobs 4", "-jobs 2")
+
+        # Enable HPC1_FPD (PSU GP1) at 32-bit alongside HPC0 (PSU GP0).
+        patched = patched.replace(
+            "CONFIG.PSU__SAXIGP0__DATA_WIDTH {32} \\\n]",
+            "CONFIG.PSU__SAXIGP0__DATA_WIDTH {32} \\\n"
+            "    CONFIG.PSU__USE__S_AXI_GP1 {1} \\\n"
+            "    CONFIG.PSU__SAXIGP1__DATA_WIDTH {32} \\\n]",
+        )
+
+        # Redirect S2MM from shared HPC0 SmartConnect to dedicated HPC1 SmartConnect.
+        patched = patched.replace(
+            "Slave {/zynq_ultra_ps_e_0/S_AXI_HPC0_FPD} ddr_seg {Auto} intc_ip {/axi_smc}",
+            "Slave {/zynq_ultra_ps_e_0/S_AXI_HPC1_FPD} ddr_seg {Auto} intc_ip {New AXI SmartConnect}",
+        ).replace(
+            "[get_bd_intf_pins axi_dma_0/M_AXI_S2MM]",
+            "[get_bd_intf_pins zynq_ultra_ps_e_0/S_AXI_HPC1_FPD]",
+        )
+
+        # Force S2MM burst size to 1 (AWLEN=0 per beat) — multi-beat bursts (AWLEN>0)
+        # only write the first beat to DDR despite reporting success.
+        patched = patched.replace(
+            "CONFIG.c_s2mm_burst_size {256}",
+            "CONFIG.c_s2mm_burst_size {2}",
+        )
+
+        if patched != tcl:
+            with open(design_tcl, "w") as f:
+                f.write(patched)
+            print("[INFO] Patched design.tcl: -jobs → 2, S2MM → HPC1_FPD, burst_size → 1")
+
+
 def convert(model_name, mode, part, backend, io_type_arg, reuse_factor, build, csim, synth):
     spec, model = load_model(model_name)
 
     io_type = io_type_arg if io_type_arg else (
-        "io_stream" if backend == "VivadoAccelerator" else spec.default_io_type
+        "io_parallel" if backend == "VivadoAccelerator" else spec.default_io_type
     )
 
     # 3) Build hls4ml config FROM PYTORCH (no ONNX)
@@ -111,7 +240,9 @@ def convert(model_name, mode, part, backend, io_type_arg, reuse_factor, build, c
 
     # 5) Write project files to disk (compile() builds C-sim .so, optional for synthesis)
     hls_model.write()
-    if backend != "VivadoAccelerator":
+    if backend == "VivadoAccelerator":
+        _inject_custom_axi_wrapper(out_dir, model, spec)
+    else:
         hls_model.compile()
 
     print(f"[OK] hls4ml project generated at: {out_dir}")

@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Diagnóstico del AXI DMA (7.1) via UIO — para confirmar si el hardware responde."""
+"""
+Diagnóstico del AXI DMA (7.1) y del AXI S2MM Snooper via UIO.
+
+Modos:
+  python3 dma_diag.py          — diagnóstico estándar del DMA
+  python3 dma_diag.py --snoop  — lee registros del snooper tras una inferencia
+  python3 dma_diag.py --clear  — limpia los contadores del snooper
+"""
 import mmap, struct, time, os, sys, glob
 
 DMA_BASE = 0xa0000000
@@ -53,7 +60,7 @@ def main():
     uio_dev, uio_name = find_uio()
     if uio_dev is None:
         print(f"ERROR: No se encontró UIO en 0x{DMA_BASE:08x}")
-        print("¿Cargaste el overlay?  ./load_overlay.sh wine_axi_dma")
+        print("¿Cargaste el overlay?  ./load_overlay.sh wine_axi_dma  (o wine_axi_dma_snooper)")
         sys.exit(1)
     print(f"UIO: {uio_dev}  ({uio_name})  @ 0x{DMA_BASE:08x}")
 
@@ -119,5 +126,149 @@ def main():
     f.close()
 
 
+# =============================================================================
+# AXI S2MM Snooper — leer registros de captura via UIO
+# =============================================================================
+# Mapa de registros del snooper (offset desde la base del UIO):
+#   0x00  AWADDR    — dirección AXI-M que el DataMover usó (debe ser out_phys)
+#   0x04  AWLEN     — burst length programado (beats = AWLEN+1)
+#   0x08  WDATA0    — dato en el beat 0 (float0 como uint32)
+#   0x0C  WDATA1    — dato en el beat 1 (float1 como uint32)
+#   0x10  WDATA2    — dato en el beat 2 (float2 como uint32)
+#   0x14  WLAST_AT  — en qué beat (0-based) se activó WLAST
+#   0x18  AW_CNT    — cuántas transacciones AW emitió el DataMover
+#   0x1C  W_CNT     — cuántos beats W se transfirieron en total
+#   0x20  B_CNT     — cuántas respuestas B (BRESP) llegaron
+#   0x24  BRESP     — último BRESP (0=OKAY, 2=SLVERR, 3=DECERR)
+#   0x28  CLEAR     — escribir 1 para resetear todos los contadores
+
+SNOOP_REGS = [
+    (0x00, 'AWADDR'),
+    (0x04, 'AWLEN'),
+    (0x08, 'WDATA0'),
+    (0x0C, 'WDATA1'),
+    (0x10, 'WDATA2'),
+    (0x14, 'WLAST_AT'),
+    (0x18, 'AW_CNT'),
+    (0x1C, 'W_CNT'),
+    (0x20, 'B_CNT'),
+    (0x24, 'BRESP'),
+]
+
+BRESP_NAMES = {0: 'OKAY', 1: 'EXOKAY', 2: 'SLVERR', 3: 'DECERR'}
+
+
+def find_uio_by_name(name_fragment):
+    """Busca un UIO device cuyo nombre contenga name_fragment."""
+    for d in sorted(glob.glob('/sys/class/uio/uio*')):
+        try:
+            name = open(f'{d}/name').read().strip()
+            if name_fragment.lower() in name.lower():
+                addr = int(open(f'{d}/maps/map0/addr').read(), 16)
+                size = int(open(f'{d}/maps/map0/size').read(), 16)
+                return f'/dev/{os.path.basename(d)}', name, addr, size
+        except OSError:
+            pass
+    return None, None, None, None
+
+
+def bits_to_float(u):
+    return struct.unpack('<f', struct.pack('<I', u))[0]
+
+
+def snoop_read():
+    dev, name, addr, size = find_uio_by_name('snooper')
+    if dev is None:
+        print("ERROR: no se encontró UIO para el snooper.")
+        print("  ¿Cargaste el bitstream con el snooper?")
+        print("  Busca en:  ls /sys/class/uio/*/name")
+        sys.exit(1)
+
+    print(f"Snooper UIO: {dev}  ({name})  @ 0x{addr:08X}  size=0x{size:X}")
+    f = open(dev, 'r+b', buffering=0)
+    m = mmap.mmap(f.fileno(), max(size, 4096))
+    rd = lambda off: struct.unpack('<I', m[off:off+4])[0]
+    wr = lambda off, v: m.__setitem__(slice(off, off+4), struct.pack('<I', v))
+
+    print()
+    vals = {}
+    for off, name_r in SNOOP_REGS:
+        v = rd(off)
+        vals[name_r] = v
+
+    # Decodificación
+    awaddr   = vals['AWADDR']
+    awlen    = vals['AWLEN']
+    beats    = awlen + 1
+    wdata    = [vals['WDATA0'], vals['WDATA1'], vals['WDATA2']]
+    wlast_at = vals['WLAST_AT']
+    aw_cnt   = vals['AW_CNT']
+    w_cnt    = vals['W_CNT']
+    b_cnt    = vals['B_CNT']
+    bresp    = vals['BRESP']
+
+    print(f"  AWADDR    = 0x{awaddr:08X}   ← dirección que el DataMover usó")
+    print(f"  AWLEN     = {awlen}  → burst de {beats} beat(s) programado")
+    print()
+    for i, d in enumerate(wdata):
+        f32 = bits_to_float(d)
+        mark = " ← WLAST aquí" if i == wlast_at else ""
+        print(f"  WDATA{i}    = 0x{d:08X}  ({f32:+.4f}){mark}")
+    print()
+    print(f"  WLAST_AT  = beat {wlast_at}  (el DataMover terminó el burst en el beat {wlast_at})")
+    print(f"  AW_CNT    = {aw_cnt}  transacciones AW emitidas")
+    print(f"  W_CNT     = {w_cnt}  beats W transferidos")
+    print(f"  B_CNT     = {b_cnt}  respuestas B recibidas")
+    print(f"  BRESP     = {bresp} ({BRESP_NAMES.get(bresp, '?')})")
+
+    print()
+    # Diagnóstico
+    if aw_cnt == 0:
+        print("!! AW_CNT=0: el DataMover NO emitió ninguna transacción AW. Bug antes del bus AXI-M.")
+    else:
+        print(f"[AW] DataMover emitió {aw_cnt} transacción(es) AW.")
+        if aw_cnt == 1:
+            print(f"     Programó burst de {beats} beat(s) (AWLEN={awlen}).")
+            if beats == 1:
+                print("     !! Solo 1 beat por burst → AWLEN=0. El DataMover usa single-beat pese a LEN=12.")
+            elif beats == 3:
+                print("     OK: burst de 3 beats programado correctamente.")
+        else:
+            print(f"     {aw_cnt} transacciones para 12 bytes → DataMover divide en bursts pequeños.")
+
+    if w_cnt == 0:
+        print("!! W_CNT=0: el canal W no transfirió ningún beat.")
+    else:
+        print(f"[W]  {w_cnt} beat(s) W transferidos. WLAST en beat {wlast_at}.")
+        if wlast_at == 0 and beats > 1:
+            print("     !! WLAST en beat 0 pero AWLEN>0 → el canal W cerró el burst prematuramente.")
+
+    if bresp != 0:
+        print(f"!! BRESP={bresp} ({BRESP_NAMES.get(bresp,'?')}): el slave reportó error en la escritura.")
+    else:
+        print(f"[B]  BRESP=OKAY. El slave aceptó la escritura sin error.")
+
+    m.close()
+    f.close()
+
+
+def snoop_clear():
+    dev, name, addr, size = find_uio_by_name('snooper')
+    if dev is None:
+        print("ERROR: no se encontró UIO para el snooper.")
+        sys.exit(1)
+    f = open(dev, 'r+b', buffering=0)
+    m = mmap.mmap(f.fileno(), max(size, 4096))
+    m[0x28:0x2C] = struct.pack('<I', 1)
+    m.close()
+    f.close()
+    print("Snooper: contadores limpiados.")
+
+
 if __name__ == '__main__':
-    main()
+    if '--snoop' in sys.argv:
+        snoop_read()
+    elif '--clear' in sys.argv:
+        snoop_clear()
+    else:
+        main()
