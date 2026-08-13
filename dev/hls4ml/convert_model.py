@@ -7,6 +7,25 @@ from mlfpga.config import MODELS_ROOT, HLS4ML_ROOT
 from mlfpga.models.registry import get_model_spec
 
 
+def _hls_input_shape(shape):
+    """hls4ml expects the PER-SAMPLE input shape, without the batch dimension.
+
+    Only normalize 4D conv inputs (1, C, H, W) -> (C, H, W). A leading batch dim
+    on a conv input breaks hls4ml 1.2.0's VivadoAccelerator + io_parallel flow: the
+    channels-last transpose optimizer miscomputes the shape ([3,64,64,1] ->
+    [3,64,1]) and asserts. The registry is inconsistent here (gtsrb_gap carries the
+    batch dim, gtsrb_gap_s does not), so we normalize instead of editing it — other
+    consumers (dev/test_gtsrb.py) rely on the raw registry value.
+
+    MLP shapes are left untouched: (13,) is a bare feature vector, and (1, 784) is
+    required by models whose first layer is Flatten(start_dim=1) — dropping the
+    leading dim there makes the input 1D and the flatten/transpose passes fail.
+    """
+    if len(shape) == 4 and shape[0] == 1:
+        return tuple(shape[1:])
+    return tuple(shape)
+
+
 def make_hls_config(model, input_shape, mode, backend, reuse_factor=1):
     # VivadoAccelerator shares the same config structure as Vivado.
     # config_from_pytorch_model passes input_shape to create_initial_config(),
@@ -84,7 +103,7 @@ def _inject_custom_axi_wrapper(out_dir, model, spec):
     import torch as _torch
 
     with _torch.no_grad():
-        dummy = _torch.zeros(1, *spec.input_shape_for_hls4ml)
+        dummy = _torch.zeros(1, *_hls_input_shape(spec.input_shape_for_hls4ml))
         out   = model(dummy)
     n_in  = int(dummy[0].numel())
     n_out = int(out[0].numel())
@@ -209,7 +228,7 @@ def convert(model_name, mode, part, backend, io_type_arg, reuse_factor, build, c
     # 3) Build hls4ml config FROM PYTORCH (no ONNX)
     cfg = make_hls_config(
         model=model,
-        input_shape=spec.input_shape_for_hls4ml,
+        input_shape=_hls_input_shape(spec.input_shape_for_hls4ml),
         mode=mode,
         backend=backend,
         reuse_factor=reuse_factor,

@@ -1,0 +1,37 @@
+# Ambiente único ML-FPGA — hls4ml + Brevitas/QONNX (FINN) en un solo env.
+# Reemplaza los antiguos `mlfpga-hls4ml` y `mlfpga-finn`.
+#
+# Crear:   conda env create -f environment.yml
+# Activar: conda activate mlfpga
+#
+# Restricciones que fijan las versiones:
+#   - brevitas 0.12.1 exige  numpy <= 1.26.4  y  setuptools < 70
+#   - qonnx 0.4.0     exige  protobuf == 3.20.3
+#   - hls4ml 1.2.0    no fija numpy ni torch (flexible)
+#   - torch/torchvision en build CPU (la laptop no tiene GPU NVIDIA) desde el índice CPU de PyTorch
+name: mlfpga
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cpu
+      - torch==2.5.1+cpu
+      - torchvision==0.20.1+cpu
+      - numpy==1.26.4
+      - "setuptools<70"
+      - dependencies==2.0.1
+      - brevitas==0.12.1
+      - qonnx==0.4.0
+      - hls4ml==1.2.0
+      - onnx==1.17.0
+      - onnxruntime==1.23.2
+      - protobuf==3.20.3
+      # export QONNX -> FINN (brevitas.export.export_qonnx)
+      - onnxscript==0.7.1
+      - onnxoptimizer==0.4.2
+      - matplotlib
+      - pandas
+      - seaborn
+      - scikit-learn
