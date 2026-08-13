@@ -317,9 +317,10 @@ def _patch_design_tcl(out_dir):
 def convert(model_name, mode, part, backend, io_type_arg, reuse_factor, build, csim, synth):
     spec, model = load_model(model_name)
 
-    io_type = io_type_arg if io_type_arg else (
-        "io_parallel" if backend == "VivadoAccelerator" else spec.default_io_type
-    )
+    # Default io_type comes from the model spec (io_parallel for MLPs, io_stream for
+    # CNNs). Both are supported for VivadoAccelerator: io_parallel -> array wrapper,
+    # io_stream -> streamified wrapper. --io-type overrides per run.
+    io_type = io_type_arg if io_type_arg else spec.default_io_type
 
     # 3) Build hls4ml config FROM PYTORCH (no ONNX)
     cfg = make_hls_config(
@@ -413,7 +414,7 @@ def main():
         choices=["io_parallel", "io_stream"],
         default=None,
         dest="io_type",
-        help="Override io_type (default: io_parallel for Vivado, io_stream for VivadoAccelerator)",
+        help="Override io_type (default: the model spec's default_io_type — io_parallel for MLPs, io_stream for CNNs)",
     )
 
     parser.add_argument(
