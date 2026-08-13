@@ -176,46 +176,142 @@ void myproject_axi(hls::stream<ap_axiu<32,0,0,0>>& in_r,
         f.write(header)
     with open(os.path.join(fw_dir, "myproject_axi.cpp"), "w") as f:
         f.write(body)
-    print(f"[INFO] Injected custom myproject_axi wrapper (N_IN={n_in}, N_OUT={n_out})")
+    print(f"[INFO] Injected custom myproject_axi wrapper (io_parallel, N_IN={n_in}, N_OUT={n_out})")
+    _patch_design_tcl(out_dir)
 
-    # Patch design.tcl: cap parallel jobs, route S2MM to HPC1 (separate from MM2S on HPC0),
-    # and force c_s2mm_burst_size=1 to work around a DataMover bug where multi-beat AXI-M
-    # bursts (AWLEN>0) only commit the first 4 bytes to DDR despite reporting IOC success.
+
+def _streamify_axi_wrapper(out_dir):
+    """
+    io_stream variant (CNNs like gtsrb_gap). Here myproject() takes packed streams
+    (hls::stream<nnet::array<...>>), so the io_parallel array wrapper does not apply.
+
+    Instead of hand-writing the packing, transform hls4ml's OWN native wrapper: it
+    already generates the correct enqueue/dequeue (flat -> input_t::size grouping),
+    DATAFLOW and stream depths. We only swap its broken interface — the array of
+    {float; ap_uint<1> last} structs (64-bit TDATA, no real TLAST) — for
+    ap_axiu<32,0,0,0> ports with proper 32-bit TDATA + separate TLAST, doing the
+    float<->bits conversion per beat. Everything else (packing order, depths) is
+    left exactly as hls4ml produced it.
+    """
+    fw_dir = os.path.join(out_dir, "firmware")
+    h_path = os.path.join(fw_dir, "myproject_axi.h")
+    cpp_path = os.path.join(fw_dir, "myproject_axi.cpp")
+
+    with open(h_path) as f:
+        header = f.read()
+    with open(cpp_path) as f:
+        body = f.read()
+
+    # --- header: add axis include + swap the prototype ---
+    if '#include "ap_axi_sdata.h"' not in header:
+        header = header.replace(
+            '#include "myproject.h"',
+            '#include "myproject.h"\n#include "ap_axi_sdata.h"\n#include "hls_stream.h"',
+            1,
+        )
+    old_decl = "void myproject_axi(input_axi_t in[N_IN], output_axi_t out[N_OUT]);"
+    new_decl = "void myproject_axi(hls::stream<ap_axiu<32,0,0,0>>& in_r, hls::stream<ap_axiu<32,0,0,0>>& out_r);"
+    if old_decl not in header:
+        raise RuntimeError(f"Unexpected native myproject_axi.h, cannot streamify: {h_path}")
+    header = header.replace(old_decl, new_decl)
+
+    # --- cpp: signature, pragmas, enqueue reads, dequeue writes ---
+    old_sig = "void myproject_axi(input_axi_t in[N_IN], output_axi_t out[N_OUT]) {"
+    new_sig = "void myproject_axi(hls::stream<ap_axiu<32,0,0,0>>& in_r, hls::stream<ap_axiu<32,0,0,0>>& out_r) {"
+    old_pragmas = (
+        "    #pragma HLS INTERFACE axis port=in\n"
+        "    #pragma HLS INTERFACE axis port=out"
+    )
+    new_pragmas = (
+        "    #pragma HLS INTERFACE axis port=in_r\n"
+        "    #pragma HLS INTERFACE axis port=out_r"
+    )
+    old_enqueue = (
+        "            ctype[j] = typename input_t::value_type(in[i * input_t::size + j].data);\n"
+        "            is_last |= (in[i * input_t::size + j].last == 1)? true : false;"
+    )
+    new_enqueue = (
+        "            ap_axiu<32,0,0,0> pkt = in_r.read();\n"
+        "            ctype[j] = typename input_t::value_type(bits_to_float(pkt.data));\n"
+        "            is_last |= (pkt.last == 1)? true : false;"
+    )
+    old_dequeue = "            out[i * result_t::size + j] = output_axi_t(ctype[j], last);"
+    new_dequeue = (
+        "            ap_axiu<32,0,0,0> pkt;\n"
+        "            pkt.data = float_to_bits((float)ctype[j]);\n"
+        "            pkt.last = last;\n"
+        "            pkt.keep = 0xF;\n"
+        "            pkt.strb = 0xF;\n"
+        "            out_r.write(pkt);"
+    )
+
+    for needle in (old_sig, old_pragmas, old_enqueue, old_dequeue):
+        if needle not in body:
+            raise RuntimeError(f"Unexpected native myproject_axi.cpp, cannot streamify: {cpp_path}")
+
+    helpers = (
+        '#include "myproject_axi.h"\n'
+        "\n"
+        "union f32_bits { float f; unsigned int u; };\n"
+        "static ap_uint<32> float_to_bits(float f) { f32_bits x; x.f = f; return (ap_uint<32>)x.u; }\n"
+        "static float bits_to_float(ap_uint<32> b) { f32_bits x; x.u = (unsigned int)b; return x.f; }\n"
+    )
+    body = body.replace('#include "myproject_axi.h"', helpers, 1)
+    body = body.replace(old_sig, new_sig)
+    body = body.replace(old_pragmas, new_pragmas)
+    body = body.replace(old_enqueue, new_enqueue)
+    body = body.replace(old_dequeue, new_dequeue)
+
+    with open(h_path, "w") as f:
+        f.write(header)
+    with open(cpp_path, "w") as f:
+        f.write(body)
+    print("[INFO] Streamified myproject_axi wrapper (io_stream): native packing kept, "
+          "interface -> ap_axiu<32> in_r/out_r")
+    _patch_design_tcl(out_dir)
+
+
+def _patch_design_tcl(out_dir):
+    """Patch design.tcl: cap parallel jobs, route S2MM to HPC1 (separate from MM2S on
+    HPC0), and force c_s2mm_burst_size=1 to work around a DataMover bug where multi-beat
+    AXI-M bursts (AWLEN>0) only commit the first 4 bytes to DDR despite reporting IOC
+    success."""
     design_tcl = os.path.join(out_dir, "design.tcl")
-    if os.path.exists(design_tcl):
-        with open(design_tcl) as f:
-            tcl = f.read()
+    if not os.path.exists(design_tcl):
+        return
+    with open(design_tcl) as f:
+        tcl = f.read()
 
-        patched = tcl.replace("-jobs 6", "-jobs 2").replace("-jobs 4", "-jobs 2")
+    patched = tcl.replace("-jobs 6", "-jobs 2").replace("-jobs 4", "-jobs 2")
 
-        # Enable HPC1_FPD (PSU GP1) at 32-bit alongside HPC0 (PSU GP0).
-        patched = patched.replace(
-            "CONFIG.PSU__SAXIGP0__DATA_WIDTH {32} \\\n]",
-            "CONFIG.PSU__SAXIGP0__DATA_WIDTH {32} \\\n"
-            "    CONFIG.PSU__USE__S_AXI_GP1 {1} \\\n"
-            "    CONFIG.PSU__SAXIGP1__DATA_WIDTH {32} \\\n]",
-        )
+    # Enable HPC1_FPD (PSU GP1) at 32-bit alongside HPC0 (PSU GP0).
+    patched = patched.replace(
+        "CONFIG.PSU__SAXIGP0__DATA_WIDTH {32} \\\n]",
+        "CONFIG.PSU__SAXIGP0__DATA_WIDTH {32} \\\n"
+        "    CONFIG.PSU__USE__S_AXI_GP1 {1} \\\n"
+        "    CONFIG.PSU__SAXIGP1__DATA_WIDTH {32} \\\n]",
+    )
 
-        # Redirect S2MM from shared HPC0 SmartConnect to dedicated HPC1 SmartConnect.
-        patched = patched.replace(
-            "Slave {/zynq_ultra_ps_e_0/S_AXI_HPC0_FPD} ddr_seg {Auto} intc_ip {/axi_smc}",
-            "Slave {/zynq_ultra_ps_e_0/S_AXI_HPC1_FPD} ddr_seg {Auto} intc_ip {New AXI SmartConnect}",
-        ).replace(
-            "[get_bd_intf_pins axi_dma_0/M_AXI_S2MM]",
-            "[get_bd_intf_pins zynq_ultra_ps_e_0/S_AXI_HPC1_FPD]",
-        )
+    # Redirect S2MM from shared HPC0 SmartConnect to dedicated HPC1 SmartConnect.
+    patched = patched.replace(
+        "Slave {/zynq_ultra_ps_e_0/S_AXI_HPC0_FPD} ddr_seg {Auto} intc_ip {/axi_smc}",
+        "Slave {/zynq_ultra_ps_e_0/S_AXI_HPC1_FPD} ddr_seg {Auto} intc_ip {New AXI SmartConnect}",
+    ).replace(
+        "[get_bd_intf_pins axi_dma_0/M_AXI_S2MM]",
+        "[get_bd_intf_pins zynq_ultra_ps_e_0/S_AXI_HPC1_FPD]",
+    )
 
-        # Force S2MM burst size to 1 (AWLEN=0 per beat) — multi-beat bursts (AWLEN>0)
-        # only write the first beat to DDR despite reporting success.
-        patched = patched.replace(
-            "CONFIG.c_s2mm_burst_size {256}",
-            "CONFIG.c_s2mm_burst_size {2}",
-        )
+    # Force S2MM burst size to 1 (AWLEN=0 per beat) — multi-beat bursts (AWLEN>0)
+    # only write the first beat to DDR despite reporting success.
+    patched = patched.replace(
+        "CONFIG.c_s2mm_burst_size {256}",
+        "CONFIG.c_s2mm_burst_size {2}",
+    )
 
-        if patched != tcl:
-            with open(design_tcl, "w") as f:
-                f.write(patched)
-            print("[INFO] Patched design.tcl: -jobs → 2, S2MM → HPC1_FPD, burst_size → 1")
+    if patched != tcl:
+        with open(design_tcl, "w") as f:
+            f.write(patched)
+        print("[INFO] Patched design.tcl: -jobs → 2, S2MM → HPC1_FPD, burst_size → 1")
 
 
 def convert(model_name, mode, part, backend, io_type_arg, reuse_factor, build, csim, synth):
@@ -260,13 +356,19 @@ def convert(model_name, mode, part, backend, io_type_arg, reuse_factor, build, c
     # 5) Write project files to disk (compile() builds C-sim .so, optional for synthesis)
     hls_model.write()
     if backend == "VivadoAccelerator":
-        _inject_custom_axi_wrapper(out_dir, model, spec)
+        # The AXI-Stream interface for the DMA depends on io_type:
+        #   io_parallel -> myproject(input_t[], result_t[])   : array wrapper (MLPs, e.g. wine)
+        #   io_stream   -> myproject(hls::stream<>&, ...)      : streamify native wrapper (CNNs, e.g. gtsrb_gap)
+        if io_type == "io_stream":
+            _streamify_axi_wrapper(out_dir)
+        else:
+            _inject_custom_axi_wrapper(out_dir, model, spec)
     else:
         hls_model.compile()
 
     print(f"[OK] hls4ml project generated at: {out_dir}")
     if backend == "VivadoAccelerator":
-        print("[INFO] VivadoAccelerator: io_stream + AXI-DMA. Run synthesis in the VM via TCL scripts.")
+        print(f"[INFO] VivadoAccelerator: {io_type} + AXI-DMA. Run synthesis in the VM via TCL scripts.")
 
     if build:
         # vsynth=True runs Vivado synthesis on top of HLS — produces bitstream for VivadoAccelerator
