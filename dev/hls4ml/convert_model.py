@@ -185,14 +185,15 @@ def _streamify_axi_wrapper(out_dir):
     io_stream variant (CNNs like gtsrb_gap). Here myproject() takes packed streams
     (hls::stream<nnet::array<...>>), so the io_parallel array wrapper does not apply.
 
-    Instead of hand-writing the packing, transform hls4ml's OWN native wrapper: it
-    already generates the correct enqueue/dequeue (flat -> input_t::size grouping),
-    DATAFLOW and stream depths. We only swap its broken interface — the array of
-    {float; ap_uint<1> last} structs (64-bit TDATA, no real TLAST) — for
-    ap_axiu<32,0,0,0> ports with proper 32-bit TDATA + separate TLAST, doing the
-    float<->bits conversion per beat. Everything else (packing order, depths) is
-    left exactly as hls4ml produced it.
+    We reuse hls4ml's packing scheme (flat -> input_t::size grouping) and the stream
+    depths it picked, but emit a CANONICAL dataflow wrapper: each stage is its own
+    function (unpack / myproject / pack), so the #pragma HLS DATAFLOW region holds only
+    declarations and function calls. TLAST is asserted unconditionally on the last
+    output beat — no cross-process `is_last` scalar, which breaks canonical dataflow
+    form (HLS 214-114). Interface is ap_axiu<32,0,0,0> (32-bit TDATA + real TLAST).
     """
+    import re
+
     fw_dir = os.path.join(out_dir, "firmware")
     h_path = os.path.join(fw_dir, "myproject_axi.h")
     cpp_path = os.path.join(fw_dir, "myproject_axi.cpp")
@@ -200,74 +201,94 @@ def _streamify_axi_wrapper(out_dir):
     with open(h_path) as f:
         header = f.read()
     with open(cpp_path) as f:
-        body = f.read()
+        native_cpp = f.read()
 
-    # --- header: add axis include + swap the prototype ---
+    if "void myproject_axi(input_axi_t in[N_IN], output_axi_t out[N_OUT]);" not in header:
+        raise RuntimeError(f"Unexpected native myproject_axi.h, cannot streamify: {h_path}")
+
+    # Keep the stream depths hls4ml chose (in_local sized to the full input, out_local small).
+    m_in = re.search(r"variable=in_local depth=(\d+)", native_cpp)
+    m_out = re.search(r"variable=out_local depth=(\d+)", native_cpp)
+    if not (m_in and m_out):
+        raise RuntimeError(f"Could not find native in_local/out_local depths: {cpp_path}")
+    in_depth, out_depth = m_in.group(1), m_out.group(1)
+
+    # header: keep N_IN/N_OUT (and the now-unused structs), add axis include, swap prototype.
     if '#include "ap_axi_sdata.h"' not in header:
         header = header.replace(
             '#include "myproject.h"',
             '#include "myproject.h"\n#include "ap_axi_sdata.h"\n#include "hls_stream.h"',
             1,
         )
-    old_decl = "void myproject_axi(input_axi_t in[N_IN], output_axi_t out[N_OUT]);"
-    new_decl = "void myproject_axi(hls::stream<ap_axiu<32,0,0,0>>& in_r, hls::stream<ap_axiu<32,0,0,0>>& out_r);"
-    if old_decl not in header:
-        raise RuntimeError(f"Unexpected native myproject_axi.h, cannot streamify: {h_path}")
-    header = header.replace(old_decl, new_decl)
-
-    # --- cpp: signature, pragmas, enqueue reads, dequeue writes ---
-    old_sig = "void myproject_axi(input_axi_t in[N_IN], output_axi_t out[N_OUT]) {"
-    new_sig = "void myproject_axi(hls::stream<ap_axiu<32,0,0,0>>& in_r, hls::stream<ap_axiu<32,0,0,0>>& out_r) {"
-    old_pragmas = (
-        "    #pragma HLS INTERFACE axis port=in\n"
-        "    #pragma HLS INTERFACE axis port=out"
-    )
-    new_pragmas = (
-        "    #pragma HLS INTERFACE axis port=in_r\n"
-        "    #pragma HLS INTERFACE axis port=out_r"
-    )
-    old_enqueue = (
-        "            ctype[j] = typename input_t::value_type(in[i * input_t::size + j].data);\n"
-        "            is_last |= (in[i * input_t::size + j].last == 1)? true : false;"
-    )
-    new_enqueue = (
-        "            ap_axiu<32,0,0,0> pkt = in_r.read();\n"
-        "            ctype[j] = typename input_t::value_type(bits_to_float(pkt.data));\n"
-        "            is_last |= (pkt.last == 1)? true : false;"
-    )
-    old_dequeue = "            out[i * result_t::size + j] = output_axi_t(ctype[j], last);"
-    new_dequeue = (
-        "            ap_axiu<32,0,0,0> pkt;\n"
-        "            pkt.data = float_to_bits((float)ctype[j]);\n"
-        "            pkt.last = last;\n"
-        "            pkt.keep = 0xF;\n"
-        "            pkt.strb = 0xF;\n"
-        "            out_r.write(pkt);"
+    header = header.replace(
+        "void myproject_axi(input_axi_t in[N_IN], output_axi_t out[N_OUT]);",
+        "void myproject_axi(hls::stream<ap_axiu<32,0,0,0>>& in_r, hls::stream<ap_axiu<32,0,0,0>>& out_r);",
     )
 
-    for needle in (old_sig, old_pragmas, old_enqueue, old_dequeue):
-        if needle not in body:
-            raise RuntimeError(f"Unexpected native myproject_axi.cpp, cannot streamify: {cpp_path}")
+    body = f'''#include "myproject_axi.h"
+#include "myproject.h"
 
-    helpers = (
-        '#include "myproject_axi.h"\n'
-        "\n"
-        "union f32_bits { float f; unsigned int u; };\n"
-        "static ap_uint<32> float_to_bits(float f) { f32_bits x; x.f = f; return (ap_uint<32>)x.u; }\n"
-        "static float bits_to_float(ap_uint<32> b) { f32_bits x; x.u = (unsigned int)b; return x.f; }\n"
-    )
-    body = body.replace('#include "myproject_axi.h"', helpers, 1)
-    body = body.replace(old_sig, new_sig)
-    body = body.replace(old_pragmas, new_pragmas)
-    body = body.replace(old_enqueue, new_enqueue)
-    body = body.replace(old_dequeue, new_dequeue)
+union f32_bits {{ float f; unsigned int u; }};
+static ap_uint<32> float_to_bits(float f) {{ f32_bits x; x.f = f; return (ap_uint<32>)x.u; }}
+static float bits_to_float(ap_uint<32> b) {{ f32_bits x; x.u = (unsigned int)b; return x.f; }}
+
+// Unpack the flat AXI-Stream (one float32 per beat) into hls4ml's packed input_t
+// stream (input_t::size values per element), in the same order as the native wrapper.
+static void axi_to_stream(hls::stream<ap_axiu<32,0,0,0>>& in_r,
+                          hls::stream<input_t>& in_local) {{
+    for (unsigned i = 0; i < N_IN / input_t::size; i++) {{
+        input_t ctype;
+        for (unsigned j = 0; j < input_t::size; j++) {{
+#pragma HLS PIPELINE
+            ap_axiu<32,0,0,0> pkt = in_r.read();
+            ctype[j] = typename input_t::value_type(bits_to_float(pkt.data));
+        }}
+        in_local.write(ctype);
+    }}
+}}
+
+// Pack hls4ml's result_t stream back to flat AXI-Stream, asserting TLAST on the
+// final output beat.
+static void stream_to_axi(hls::stream<result_t>& out_local,
+                          hls::stream<ap_axiu<32,0,0,0>>& out_r) {{
+    for (unsigned i = 0; i < N_OUT / result_t::size; i++) {{
+        result_t ctype = out_local.read();
+        for (unsigned j = 0; j < result_t::size; j++) {{
+#pragma HLS PIPELINE
+            ap_axiu<32,0,0,0> pkt;
+            pkt.data = float_to_bits((float)ctype[j]);
+            pkt.last = (i * result_t::size + j == N_OUT - 1) ? 1 : 0;
+            pkt.keep = 0xF;
+            pkt.strb = 0xF;
+            out_r.write(pkt);
+        }}
+    }}
+}}
+
+void myproject_axi(hls::stream<ap_axiu<32,0,0,0>>& in_r,
+                   hls::stream<ap_axiu<32,0,0,0>>& out_r) {{
+#pragma HLS INTERFACE axis port=in_r
+#pragma HLS INTERFACE axis port=out_r
+#pragma HLS INTERFACE ap_ctrl_none port=return
+#pragma HLS DATAFLOW
+
+    hls::stream<input_t> in_local("input_1");
+    hls::stream<result_t> out_local("output_1");
+#pragma HLS STREAM variable=in_local depth={in_depth}
+#pragma HLS STREAM variable=out_local depth={out_depth}
+
+    axi_to_stream(in_r, in_local);
+    myproject(in_local, out_local);
+    stream_to_axi(out_local, out_r);
+}}
+'''
 
     with open(h_path, "w") as f:
         f.write(header)
     with open(cpp_path, "w") as f:
         f.write(body)
-    print("[INFO] Streamified myproject_axi wrapper (io_stream): native packing kept, "
-          "interface -> ap_axiu<32> in_r/out_r")
+    print("[INFO] Streamified myproject_axi wrapper (io_stream, canonical dataflow): "
+          "helper-function stages, ap_axiu<32> in_r/out_r")
     _patch_design_tcl(out_dir)
 
 
