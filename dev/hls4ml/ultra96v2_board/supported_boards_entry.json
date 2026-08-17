@@ -1,0 +1,12 @@
+{
+  "ultra96v2": {
+    "part": "xczu3eg-sbva484-1-i",
+    "tcl_scripts": {
+      "axi_stream": "axi_stream_design.tcl"
+    },
+    "python_drivers": {
+      "axi_stream": "axi_stream_driver.py"
+    },
+    "c_drivers": {}
+  }
+}

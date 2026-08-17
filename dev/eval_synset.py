@@ -24,13 +24,16 @@ from torch.utils.data import DataLoader
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from mlfpga.config import DATA_ROOT, MODELS_ROOT
 from mlfpga.models.registry import get_model_spec
-from dev.train.gtsrb import SynsetDataset, IMG_SIZE, MEAN, STD
+from dev.train.gtsrb import SynsetDataset, ARCH_DEFAULT_SIZE, MEAN, STD
 
-VAL_TF = transforms.Compose([
-    transforms.Resize((IMG_SIZE, IMG_SIZE)),
-    transforms.ToTensor(),
-    transforms.Normalize(MEAN, STD),
-])
+
+def make_val_tf(arch):
+    img_size = ARCH_DEFAULT_SIZE[arch]
+    return transforms.Compose([
+        transforms.Resize((img_size, img_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(MEAN, STD),
+    ])
 
 
 def evaluate(model, loader, device):
@@ -88,6 +91,8 @@ def main():
     model.to(device)
     print(f"Model: {args.arch}  |  weights: {pth}")
 
+    val_tf = make_val_tf(args.arch)
+
     names_path = os.path.join(DATA_ROOT, "gtsrb_class_names.json")
     with open(names_path) as f:
         raw = json.load(f)
@@ -97,10 +102,10 @@ def main():
     if args.official_split:
         csv_dir = os.path.join(DATA_ROOT, "synset")
         val_csv = os.path.join(csv_dir, "cyclesGTSRB_val.csv")
-        ds = SynsetDataset(args.synset_dir, transform=VAL_TF, csv_file=val_csv)
+        ds = SynsetDataset(args.synset_dir, transform=val_tf, csv_file=val_csv)
         split_label = "official val split (4300 imgs)"
     else:
-        ds = SynsetDataset(args.synset_dir, transform=VAL_TF)
+        ds = SynsetDataset(args.synset_dir, transform=val_tf)
         split_label = "all images"
 
     loader = DataLoader(ds, batch_size=args.batch, shuffle=False, num_workers=4)
@@ -111,7 +116,7 @@ def main():
     # --- GTSRB (optional) ---
     if args.gtsrb:
         gtsrb_ds = datasets.GTSRB(os.path.join(DATA_ROOT, "gtsrb"),
-                                   split="test", download=False, transform=VAL_TF)
+                                   split="test", download=False, transform=val_tf)
         loader2  = DataLoader(gtsrb_ds, batch_size=args.batch, shuffle=False, num_workers=4)
         acc2, ok2, tot2 = evaluate(model, loader2, device)
         print_results("GTSRB test set (real photos)", acc2, ok2, tot2, names)
