@@ -8,13 +8,14 @@ Expects face images in:
 Usage:
   python dev/train/face_recognition.py [--faces-dir data/faces] [--components 50]
 
-Outputs (all in data/models/):
+Outputs (in data/models/, except face_test_data.json):
   face_pca_mean.npy        — mean face vector (1024,)
   face_pca_components.npy  — eigenvectors (50, 1024)
   face_labels.json         — {index: person_name}
   face_mlp.pth             — MLP weights
   face_mlp_float.onnx      — ONNX for CPU inference (backup / validation)
-  face_test_data.json      — scaled embeddings for FPGA test (like wine test_data.json)
+  face_test_data.json      — scaled embeddings for FPGA test (like wine test_data.json);
+                              written to FPGA-files/test_scripts/face/, tracked in git
 """
 
 import argparse
@@ -32,7 +33,7 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from mlfpga.config import MODELS_ROOT
+from mlfpga.config import FPGA_FILES_ROOT, MODELS_ROOT
 from mlfpga.models.face_mlp import FaceMLP
 
 FACE_SIZE   = 32
@@ -235,8 +236,9 @@ def main():
     export_onnx(model, args.components, onnx_path)
     print(f"Weights:    {pth_path}")
 
-    # 7. Test data JSON for FPGA validation (mirrors Wine pattern)
-    test_path = os.path.join(MODELS_ROOT, "..", "face_test_data.json")
+    # 7. Test data JSON for FPGA validation (mirrors Wine pattern) — tracked alongside
+    # the deployment script, not in data/, so it's available wherever the repo is cloned.
+    test_path = os.path.join(FPGA_FILES_ROOT, "test_scripts", "face", "face_test_data.json")
     save_test_data(X_vl, y_vl, label_map, test_path)
 
     print("\n── Files to copy to Ultra96 ──")

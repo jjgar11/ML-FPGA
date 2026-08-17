@@ -5,7 +5,7 @@ Does not require onnxruntime or PyTorch. Only numpy and opencv (for image/camera
 Preparation on the dev machine:
     python dev/export_weights_numpy.py
     scp data/models/gtsrb_gap_weights.npz  root@10.164.145.147:/home/root/
-    scp data/gtsrb_class_names.json         root@10.164.145.147:/home/root/
+    scp assets/gtsrb_class_names.json       root@10.164.145.147:/home/root/
     scp dev/camera/infer_gtsrb_numpy.py     root@10.164.145.147:/home/root/
 
 Usage on the Ultra96:

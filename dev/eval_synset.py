@@ -22,7 +22,7 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from mlfpga.config import DATA_ROOT, MODELS_ROOT
+from mlfpga.config import ASSETS_ROOT, DATA_ROOT, MODELS_ROOT
 from mlfpga.models.registry import get_model_spec
 from dev.train.gtsrb import SynsetDataset, ARCH_DEFAULT_SIZE, MEAN, STD
 
@@ -93,7 +93,7 @@ def main():
 
     val_tf = make_val_tf(args.arch)
 
-    names_path = os.path.join(DATA_ROOT, "gtsrb_class_names.json")
+    names_path = os.path.join(ASSETS_ROOT, "gtsrb_class_names.json")
     with open(names_path) as f:
         raw = json.load(f)
     names = [raw[str(i)] for i in range(43)]

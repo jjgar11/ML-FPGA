@@ -15,13 +15,11 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from mlfpga.models.face_mlp import FaceMLP
-from mlfpga.config import MODELS_ROOT
-
-DATA_ROOT = os.path.join(os.path.dirname(__file__), "..", "data")
+from mlfpga.config import FPGA_FILES_ROOT, MODELS_ROOT
 
 LABELS_PATH    = os.path.join(MODELS_ROOT, "face_labels.json")
 PTH_PATH       = os.path.join(MODELS_ROOT, "face_mlp.pth")
-TEST_DATA_PATH = os.path.join(DATA_ROOT,   "face_test_data.json")
+TEST_DATA_PATH = os.path.join(FPGA_FILES_ROOT, "test_scripts", "face", "face_test_data.json")
 UNKNOWN_THR    = 0.75
 
 

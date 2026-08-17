@@ -17,13 +17,13 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from mlfpga.config import DATA_ROOT, MODELS_ROOT
+from mlfpga.config import ASSETS_ROOT, MODELS_ROOT
 from mlfpga.models.registry import MODEL_REGISTRY, get_model_spec
 
 MEAN = np.array([0.3337, 0.3064, 0.3171], dtype=np.float32)
 STD  = np.array([0.2672, 0.2564, 0.2629], dtype=np.float32)
 
-CLASS_NAMES_PATH = os.path.join(DATA_ROOT, "gtsrb_class_names.json")
+CLASS_NAMES_PATH = os.path.join(ASSETS_ROOT, "gtsrb_class_names.json")
 
 
 def load_class_names():

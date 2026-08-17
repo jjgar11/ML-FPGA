@@ -10,7 +10,7 @@ Preparación en la dev machine:
     python dev/train/gtsrb.py --arch gtsrb_gap --epochs 20
     python dev/export_onnx.py --model gtsrb_gap
     scp data/models/gtsrb_gap_float.onnx root@192.168.0.103:/home/root/
-    scp data/gtsrb_class_names.json      root@192.168.0.103:/home/root/
+    scp assets/gtsrb_class_names.json      root@192.168.0.103:/home/root/
 
 Uso en la Ultra96:
     python infer_gtsrb_cpu.py --image mi_señal.jpg
@@ -218,7 +218,7 @@ def main():
 
     if not os.path.exists(args.names):
         print(f"class_names no encontrado: {args.names}")
-        print("  scp data/gtsrb_class_names.json root@192.168.0.103:/home/root/")
+        print("  scp assets/gtsrb_class_names.json root@192.168.0.103:/home/root/")
         sys.exit(1)
 
     with open(args.names) as f:
