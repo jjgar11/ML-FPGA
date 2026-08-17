@@ -180,6 +180,49 @@ void myproject_axi(hls::stream<ap_axiu<32,0,0,0>>& in_r,
     _patch_design_tcl(out_dir)
 
 
+def _patch_dataflow_weights(out_dir):
+    """
+    hls4ml #include's the weight arrays (w2, b2, ...) at file scope in parameters.h,
+    outside myproject(). Vitis HLS's canonical dataflow check (HLS 214-113) rejects
+    referencing them as nnet:: call arguments inside myproject()'s
+    #pragma HLS DATAFLOW region: a variable used there must be a function argument or
+    declared inside the region. Confirmed fix (hls4ml PR #629 discussion): move the
+    weight #includes from parameters.h into myproject.cpp, right after
+    #pragma HLS DATAFLOW.
+    """
+    import re
+
+    fw_dir = os.path.join(out_dir, "firmware")
+    params_path = os.path.join(fw_dir, "parameters.h")
+    myproject_path = os.path.join(fw_dir, "myproject.cpp")
+
+    with open(params_path) as f:
+        params = f.read()
+    with open(myproject_path) as f:
+        myproject_cpp = f.read()
+
+    m = re.search(
+        r"// hls-fpga-machine-learning insert weights\n((?:#include \"weights/[^\"]+\.h\"\n)+)",
+        params,
+    )
+    if not m:
+        raise RuntimeError(f"Could not find weight includes in {params_path}")
+    weight_includes = m.group(1)
+    params = params[: m.start(1)] + params[m.end(1):]
+
+    marker = "#pragma HLS DATAFLOW\n"
+    if marker not in myproject_cpp:
+        raise RuntimeError(f"Could not find '#pragma HLS DATAFLOW' in {myproject_path}")
+    myproject_cpp = myproject_cpp.replace(marker, marker + "\n" + weight_includes, 1)
+
+    with open(params_path, "w") as f:
+        f.write(params)
+    with open(myproject_path, "w") as f:
+        f.write(myproject_cpp)
+    print(f"[INFO] Moved {weight_includes.count(chr(10))} weight includes into "
+          "myproject()'s DATAFLOW region (fixes HLS 214-113)")
+
+
 def _streamify_axi_wrapper(out_dir):
     """
     io_stream variant (CNNs like gtsrb_gap). Here myproject() takes packed streams
@@ -382,6 +425,7 @@ def convert(model_name, mode, part, backend, io_type_arg, reuse_factor, build, c
         #   io_parallel -> myproject(input_t[], result_t[])   : array wrapper (MLPs, e.g. wine)
         #   io_stream   -> myproject(hls::stream<>&, ...)      : streamify native wrapper (CNNs, e.g. gtsrb_gap)
         if io_type == "io_stream":
+            _patch_dataflow_weights(out_dir)
             _streamify_axi_wrapper(out_dir)
         else:
             _inject_custom_axi_wrapper(out_dir, model, spec)
